@@ -1,0 +1,28 @@
+# System
+.DS_Store
+Thumbs.db
+
+# Environments
+venv/
+env/
+.env
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+.next/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data
+*.sqlite
+*.db
+connectaflow/data/*.db
+
+# IDEs
+.vscode/
+.idea/

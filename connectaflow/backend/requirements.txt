@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+sqlmodel
+google-generativeai
+pandas
+openpyxl
+requests
+asyncpg
+alembic
+duckduckgo-search
+polars
