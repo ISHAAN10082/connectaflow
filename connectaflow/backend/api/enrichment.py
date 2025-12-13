@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Depends
 from sqlmodel import Session, select
 from database import get_session
-from models import Lead
+from models import Lead, EnrichmentLog
 from data_processing import read_csv_buffer
 from enrichment import EnrichmentService
 from typing import List, Dict
@@ -139,41 +139,103 @@ async def batch_enrich_leads(
         from database import engine
         from sqlmodel import Session
         import uuid
+        from datetime import datetime
+        import traceback
 
-        with Session(engine) as bg_session:
-             for lid in lead_ids:
-                try:
-                    lead = bg_session.get(Lead, uuid.UUID(lid))
-                    if not lead:
-                        continue
-                        
-                    logger.info(f"Enriching Lead: {lead.email}")
-                    
-                    # Prepare lead data
-                    lead_data = lead.model_dump()
-                    lead_data.update(lead.custom_data or {})
-                    
-                    # Enrich (Slow network op)
-                    result = await enrichment_service.enrich_lead(lead_data, targets, context, instruction)
-                    
-                    if result and "error" not in result:
-                        # Refresh lead to be safe
+        # Concurrency Control
+        SEMAPHORE_LIMIT = 5
+        semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
+
+        async def process_single_lead(lid):
+            async with semaphore:
+                with Session(engine) as bg_session:
+                    try:
                         lead = bg_session.get(Lead, uuid.UUID(lid))
-                        
-                        # Merge Dicts
-                        current_custom = dict(lead.custom_data or {})
-                        current_custom.update(result)
-                        
-                        lead.custom_data = current_custom
-                        lead.enrichment_status = "enriched"
-                        bg_session.add(lead)
+                        if not lead:
+                            return
+
+                        # Create Log Entry
+                        enrich_log = EnrichmentLog(
+                            lead_id=lead.id,
+                            source="batch_runner",
+                            status="started",
+                            timestamp=datetime.utcnow()
+                        )
+                        bg_session.add(enrich_log)
                         bg_session.commit()
-                        logger.success(f"Enriched {lead.email} successfully. Added keys: {list(result.keys())}")
-                        logger.debug(f"New Custom Data: {current_custom}")
-                    else:
-                         logger.warning(f"Failed to enrich {lead.email}: {result}")
-                except Exception as e:
-                    logger.error(f"Error processing lead {lid}: {e}")
+                        bg_session.refresh(enrich_log)
+
+                        logger.info(f"Enriching Lead: {lead.email}")
+                        
+                        # Prepare lead data
+                        lead_data = lead.model_dump()
+                        lead_data.update(lead.custom_data or {})
+                        
+                        try:
+                            # Enrich (Slow network op)
+                            result = await enrichment_service.enrich_lead(lead_data, targets, context, instruction)
+                            
+                            if result and "error" not in result:
+                                # Refresh lead to be safe
+                                lead = bg_session.get(Lead, uuid.UUID(lid))
+                                
+                                # Merge Dicts
+                                current_custom = dict(lead.custom_data or {})
+                                current_custom.update(result)
+                                # Clear any previous error
+                                if "_latest_enrichment_error" in current_custom:
+                                    del current_custom["_latest_enrichment_error"]
+                                
+                                lead.custom_data = current_custom
+                                lead.enrichment_status = "enriched"
+                                
+                                # Update Log
+                                enrich_log.status = "success"
+                                enrich_log.result = result
+                                
+                                bg_session.add(lead)
+                                bg_session.add(enrich_log)
+                                bg_session.commit()
+                                logger.success(f"Enriched {lead.email} successfully.")
+                            else:
+                                 error_msg = result.get("error", "Unknown error") if result else "Empty result"
+                                 logger.warning(f"Failed to enrich {lead.email}: {error_msg}")
+                                 
+                                 lead = bg_session.get(Lead, uuid.UUID(lid))
+                                 lead.enrichment_status = "failed"
+                                 
+                                 current_custom = dict(lead.custom_data or {})
+                                 current_custom["_latest_enrichment_error"] = error_msg
+                                 lead.custom_data = current_custom
+                                 
+                                 enrich_log.status = "failed"
+                                 enrich_log.result = {"error": error_msg}
+                                 
+                                 bg_session.add(lead)
+                                 bg_session.add(enrich_log)
+                                 bg_session.commit()
+
+                        except Exception as e:
+                            logger.error(f"Exception during enrichment call for {lead.email}: {e}")
+                            lead = bg_session.get(Lead, uuid.UUID(lid))
+                            lead.enrichment_status = "failed"
+                            
+                            current_custom = dict(lead.custom_data or {})
+                            current_custom["_latest_enrichment_error"] = str(e)
+                            lead.custom_data = current_custom
+                            
+                            enrich_log.status = "error"
+                            enrich_log.result = {"error": str(e), "traceback": traceback.format_exc()}
+                            
+                            bg_session.add(lead)
+                            bg_session.add(enrich_log)
+                            bg_session.commit()
+
+                    except Exception as e:
+                        logger.error(f"Critical error processing lead {lid}: {e}")
+
+        # Run all tasks in parallel
+        await asyncio.gather(*(process_single_lead(lid) for lid in lead_ids))
 
     # Run in background
     background_tasks.add_task(process_batch_enrichment_task, lead_uuids_str, request.target_columns, request.context_columns, request.instruction)

@@ -20,9 +20,10 @@ interface LeadTableProps {
     data: Lead[];
     isLoading?: boolean;
     onRefresh?: () => void;
+    visibleCustomColumns?: string[];
 }
 
-export function LeadTable({ data, isLoading, onRefresh }: LeadTableProps) {
+export function LeadTable({ data, isLoading, onRefresh, visibleCustomColumns = [] }: LeadTableProps) {
     const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
     const [isEnrichModalOpen, setIsEnrichModalOpen] = useState(false);
 
@@ -97,23 +98,19 @@ export function LeadTable({ data, isLoading, onRefresh }: LeadTableProps) {
         );
     };
 
-    // 1. Compute Dynamic Columns from custom_data
+    // 1. Compute Dynamic Columns based on PROPS (Controlled by Parent), not Data
     const dynamicColumns = useMemo(() => {
-        const allKeys = new Set<string>();
-        data.forEach(lead => {
-            if (lead.custom_data) {
-                Object.keys(lead.custom_data).forEach(k => allKeys.add(k));
-            }
-        });
+        // If visibleCustomColumns is passed, use it. Otherwise fallback to empty or auto (we prefer empty for strictness)
+        // Parent ControlPanel is responsible for passing the filtered list (all - hidden).
 
-        return Array.from(allKeys).sort().map(key =>
+        return visibleCustomColumns.map(key =>
             columnHelper.accessor(row => row.custom_data?.[key], {
                 id: `custom_${key}`,
-                header: key.charAt(0).toUpperCase() + key.slice(1),
+                header: key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '),
                 cell: EditableCell
             })
         );
-    }, [data]);
+    }, [visibleCustomColumns]);
 
     // 2. Define Base Columns + Dynamic Columns
     const columns = useMemo(() => [

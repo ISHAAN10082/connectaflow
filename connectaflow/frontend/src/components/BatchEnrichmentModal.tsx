@@ -36,7 +36,7 @@ export function BatchEnrichmentModal({ isOpen, onClose, selectedLeadIds, onSucce
         try {
             const targetCols = targets.split(',').map(s => s.trim()).filter(Boolean);
 
-            await axios.post('http://localhost:8000/api/enrichment/batch-enrich', {
+            await axios.post('http://localhost:8000/api/enrichment/batch-enrich/', {
                 lead_ids: selectedLeadIds,
                 target_columns: targetCols,
                 context_columns: context,
