@@ -1,7 +1,7 @@
 from crawl4ai import AsyncWebCrawler
 from crawl4ai.extraction_strategy import LLMExtractionStrategy
 from pydantic import BaseModel, Field, create_model
-from .services.search_service import SearchService
+from services.search_service import SearchService
 import os
 import asyncio
 import json

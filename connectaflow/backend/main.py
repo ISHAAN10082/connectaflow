@@ -6,7 +6,7 @@ import os
 load_dotenv()
 
 from contextlib import asynccontextmanager
-from .database import create_db_and_tables
+from database import create_db_and_tables
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,7 +15,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Connectaflow API", version="0.1.0", lifespan=lifespan)
 
-from .api import leads, enrichment
+from api import leads, enrichment
 app.include_router(leads.router)
 app.include_router(enrichment.router)
 

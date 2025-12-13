@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 from typing import List
-from ..database import get_session
-from ..models import Lead
+from database import get_session
+from models import Lead
 import uuid
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])

@@ -1,9 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Depends
 from sqlmodel import Session, select
-from ..database import get_session
-from ..models import Lead
-from ..data_processing import read_csv_buffer
-from ..enrichment import EnrichmentService
+from database import get_session
+from models import Lead
+from data_processing import read_csv_buffer
+from enrichment import EnrichmentService
 from typing import List, Dict
 import asyncio
 import polars as pl
@@ -136,7 +136,7 @@ async def batch_enrich_leads(
         logger.info(f"Starting async batch job for {len(lead_ids)} leads.")
         
         # We need to manually create session here because we are out of request context
-        from ..database import engine
+        from database import engine
         from sqlmodel import Session
         import uuid
 
