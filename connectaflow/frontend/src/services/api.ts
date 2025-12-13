@@ -22,12 +22,12 @@ export interface Lead {
 }
 
 export const getLeads = async (offset = 0, limit = 50) => {
-    const response = await api.get<Lead[]>('/leads', { params: { offset, limit } });
+    const response = await api.get<Lead[]>('/leads/', { params: { offset, limit } });
     return response.data;
 };
 
 export const createLead = async (lead: Partial<Lead>) => {
-    const response = await api.post<Lead>('/leads', lead);
+    const response = await api.post<Lead>('/leads/', lead);
     return response.data;
 };
 
