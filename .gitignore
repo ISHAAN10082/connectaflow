@@ -6,6 +6,7 @@ Thumbs.db
 venv/
 env/
 .env
+#new chnage
 
 # Node
 node_modules/
