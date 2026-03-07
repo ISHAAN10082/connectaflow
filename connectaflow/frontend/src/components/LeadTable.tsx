@@ -1,294 +1,224 @@
 "use client";
 
+import { useState, useEffect, useMemo } from 'react';
 import {
-    useReactTable,
-    getCoreRowModel,
-    flexRender,
-    createColumnHelper,
-    type ColumnDef,
-    type RowSelectionState,
-} from "@tanstack/react-table";
-import { type Lead } from "../services/api";
-import { cn } from "../lib/utils";
-import { MoreHorizontal, ArrowUpDown, Sparkles, CheckSquare, Square, Loader2 } from 'lucide-react';
-import { useState, useMemo, useEffect } from "react";
-import { BatchEnrichmentModal } from "./BatchEnrichmentModal";
+    useReactTable, getCoreRowModel, getSortedRowModel,
+    getFilteredRowModel, flexRender, createColumnHelper,
+    type SortingState, type ColumnDef,
+} from '@tanstack/react-table';
+import { ArrowUpDown, Search, RefreshCw, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { toast } from 'sonner';
+import { getLeads, updateLead, type Lead } from '../services/api';
 
-const columnHelper = createColumnHelper<Lead>();
+const QUALITY_DOT: Record<string, string> = {
+    high: 'bg-emerald-400',
+    medium: 'bg-amber-400',
+    low: 'bg-orange-400',
+    insufficient: 'bg-slate-500',
+};
 
-interface LeadTableProps {
-    data: Lead[];
-    isLoading?: boolean;
-    onRefresh?: () => void;
-    visibleCustomColumns?: string[];
-}
+export function LeadTable() {
+    const [leads, setLeads] = useState<Lead[]>([]);
+    const [total, setTotal] = useState(0);
+    const [page, setPage] = useState(0);
+    const [loading, setLoading] = useState(true);
+    const [sorting, setSorting] = useState<SortingState>([]);
+    const [globalFilter, setGlobalFilter] = useState('');
+    const PAGE_SIZE = 50;
 
-export function LeadTable({ data, isLoading, onRefresh, visibleCustomColumns = [] }: LeadTableProps) {
-    const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-    const [isEnrichModalOpen, setIsEnrichModalOpen] = useState(false);
-
-    // Editable Cell Component
-    const EditableCell = ({ getValue, row, column, table }: any) => {
-        const initialValue = getValue();
-        const [value, setValue] = useState(initialValue);
-        const [isSaving, setIsSaving] = useState(false);
-
-        // Update local state if prop changes (e.g. optimistic update)
-        useEffect(() => {
-            setValue(initialValue);
-        }, [initialValue]);
-
-        const onBlur = async () => {
-            if (value === initialValue) return;
-
-            setIsSaving(true);
-            try {
-                // Determine field name (remove 'custom_' prefix if needed)
-                const fieldKey = column.id.replace('custom_', '');
-
-                // Construct patch payload
-                // We need to merge with existing custom_data to avoid overwriting
-                const existingCustom = row.original.custom_data || {};
-                const newCustom = { ...existingCustom, [fieldKey]: value };
-
-                // Call API
-                const response = await fetch(`http://localhost:8000/api/leads/${row.original.id}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ custom_data: newCustom })
-                });
-
-                if (!response.ok) throw new Error('Failed to update');
-
-                // Optimistic update handled by local state, but usually good to refresh or update Table data
-                // For now, local state provides instant feedback
-            } catch (error) {
-                console.error("Update failed", error);
-                setValue(initialValue); // Revert on error
-                alert("Failed to save value");
-            } finally {
-                setIsSaving(false);
-            }
-        };
-
-        if (value === "Enriching...") {
-            return (
-                <div className="flex items-center text-xs text-purple-600 font-medium animate-pulse px-2 py-1 bg-purple-50 rounded">
-                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                    Researching...
-                </div>
-            )
+    const loadLeads = async (skip = 0) => {
+        setLoading(true);
+        try {
+            const { data } = await getLeads(skip, PAGE_SIZE);
+            setLeads(data.leads || []);
+            setTotal(data.total || 0);
+        } catch {
+            toast.error('Failed to load leads');
+        } finally {
+            setLoading(false);
         }
-
-        return (
-            <div className="relative group">
-                <input
-                    value={String(value || "")}
-                    onChange={e => setValue(e.target.value)}
-                    onBlur={onBlur}
-                    className={cn(
-                        "w-full bg-transparent border-none p-0 focus:ring-0 text-slate-600 font-medium truncate focus:bg-white focus:shadow-sm rounded transition-all",
-                        isSaving && "opacity-50"
-                    )}
-                />
-                {isSaving && (
-                    <div className="absolute right-0 top-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                )}
-            </div>
-        );
     };
 
-    // 1. Compute Dynamic Columns based on PROPS (Controlled by Parent), not Data
-    const dynamicColumns = useMemo(() => {
-        // If visibleCustomColumns is passed, use it. Otherwise fallback to empty or auto (we prefer empty for strictness)
-        // Parent ControlPanel is responsible for passing the filtered list (all - hidden).
+    useEffect(() => { loadLeads(page * PAGE_SIZE); }, [page]);
 
-        return visibleCustomColumns.map(key =>
-            columnHelper.accessor(row => row.custom_data?.[key], {
-                id: `custom_${key}`,
-                header: key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '),
-                cell: EditableCell
-            })
-        );
-    }, [visibleCustomColumns]);
-
-    // 2. Define Base Columns + Dynamic Columns
-    const columns = useMemo(() => [
-        // Selection Column
+    const columns = useMemo<ColumnDef<Lead, any>[]>(() => [
         {
-            id: 'select',
-            header: ({ table }: any) => (
-                <button
-                    onClick={table.getToggleAllRowsSelectedHandler()}
-                    className="text-slate-400 hover:text-slate-600"
-                >
-                    {table.getIsAllRowsSelected() ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
-                </button>
-            ),
-            cell: ({ row }: any) => (
-                <button
-                    onClick={row.getToggleSelectedHandler()}
-                    className="text-slate-400 hover:text-slate-600"
-                >
-                    {row.getIsSelected() ? <CheckSquare className="w-5 h-5 text-blue-600" /> : <Square className="w-5 h-5" />}
-                </button>
+            accessorKey: 'email',
+            header: 'Email',
+            cell: (info: any) => (
+                <span className="text-sm font-medium text-white">{info.getValue()}</span>
             ),
         },
-        columnHelper.accessor("first_name", {
-            header: "First Name",
-            cell: (info) => <span className="font-medium text-slate-900">{info.getValue() || "-"}</span>,
-        }),
-        columnHelper.accessor("email", {
-            header: "Email",
-            cell: (info) => (
-                <a href={`mailto:${info.getValue()}`} className="text-blue-600 hover:underline">
-                    {info.getValue()}
-                </a>
+        {
+            accessorKey: 'domain',
+            header: 'Domain',
+            cell: (info: any) => (
+                <span className="text-sm text-slate-400 font-mono">{info.getValue() || '—'}</span>
             ),
-        }),
-        columnHelper.accessor("status", {
-            header: "Status",
-            cell: (info) => (
-                <span
-                    className={cn(
-                        "px-2 py-1 rounded-full text-xs font-semibold",
-                        info.getValue() === "New" && "bg-blue-100 text-blue-700",
-                        info.getValue() === "Enriched" && "bg-green-100 text-green-700",
-                        info.getValue() === "Failed" && "bg-red-100 text-red-700"
-                    )}
-                >
-                    {info.getValue()}
-                </span>
-            ),
-        }),
-        // Insert Dynamic Columns Here
-        ...dynamicColumns,
-        columnHelper.accessor("score", {
-            header: "Score",
-            cell: (info) => (
-                <div className="w-full bg-slate-200 rounded-full h-2.5 dark:bg-slate-700 max-w-[100px]">
-                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${info.getValue()}%` }}></div>
-                </div>
-            ),
-        }),
-    ], [dynamicColumns]);
+        },
+        {
+            id: 'company',
+            header: 'Company',
+            cell: ({ row }: any) => {
+                const profile = row.original.company_profile;
+                return (
+                    <span className="text-sm text-white">{profile?.name || '—'}</span>
+                );
+            },
+        },
+        {
+            id: 'quality',
+            header: 'Quality',
+            cell: ({ row }: any) => {
+                const profile = row.original.company_profile;
+                if (!profile) return <span className="text-xs text-slate-600">—</span>;
+                const tier = profile.quality_tier || 'pending';
+                return (
+                    <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${QUALITY_DOT[tier] || 'bg-slate-600'}`} />
+                        <span className="text-xs text-slate-400 capitalize">{tier}</span>
+                        <span className="text-xs text-slate-500 font-mono">{((profile.quality_score || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                );
+            },
+        },
+        {
+            accessorKey: 'status',
+            header: 'Status',
+            cell: (info: any) => {
+                const status = info.getValue();
+                const colors: Record<string, string> = {
+                    New: 'bg-blue-500/10 text-blue-400',
+                    Contacted: 'bg-amber-500/10 text-amber-400',
+                    Qualified: 'bg-emerald-500/10 text-emerald-400',
+                    Closed: 'bg-slate-500/10 text-slate-400',
+                };
+                return (
+                    <span className={`text-xs font-semibold px-2 py-1 rounded-lg ${colors[status] || 'bg-slate-500/10 text-slate-400'}`}>
+                        {status}
+                    </span>
+                );
+            },
+        },
+        {
+            accessorKey: 'enrichment_status',
+            header: 'Enrichment',
+            cell: (info: any) => {
+                const s = info.getValue();
+                const colors: Record<string, string> = {
+                    pending: 'text-slate-500',
+                    enriched: 'text-emerald-400',
+                    failed: 'text-red-400',
+                };
+                return <span className={`text-xs font-medium ${colors[s] || 'text-slate-500'}`}>{s}</span>;
+            },
+        },
+    ], []);
 
     const table = useReactTable({
-        data,
+        data: leads,
         columns,
-        state: {
-            rowSelection,
-        },
-        onRowSelectionChange: setRowSelection,
+        state: { sorting, globalFilter },
+        onSortingChange: setSorting,
+        onGlobalFilterChange: setGlobalFilter,
         getCoreRowModel: getCoreRowModel(),
-        getRowId: row => row.id, // STABILITY FIX: Ensure row ID is always the UUID
+        getSortedRowModel: getSortedRowModel(),
+        getFilteredRowModel: getFilteredRowModel(),
     });
 
-    const selectedIds = useMemo(() => {
-        return table.getSelectedRowModel().rows.map(row => row.original.id);
-    }, [rowSelection, table]);
-
-    if (isLoading) {
-        return <div className="p-8 text-center text-slate-500">Loading leads...</div>
-    }
+    const totalPages = Math.ceil(total / PAGE_SIZE);
 
     return (
-        <div className="space-y-4">
-            {/* Batch Actions Toolbar */}
-            <div className="bg-slate-900 text-white px-6 py-3 rounded-xl flex items-center justify-between shadow-lg animate-in slide-in-from-bottom-2 fade-in">
-                <span className="font-medium">{selectedIds.length} leads selected</span>
-                <div className="flex space-x-2">
+        <div id="lead-table">
+            {/* Toolbar */}
+            <div className="flex items-center justify-between mb-4">
+                <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input
+                        type="text"
+                        value={globalFilter}
+                        onChange={e => setGlobalFilter(e.target.value)}
+                        placeholder="Search leads..."
+                        className="pl-9 pr-4 py-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-sm text-white placeholder-slate-600 focus:border-violet-500/40 outline-none w-64"
+                    />
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500">{total} leads</span>
                     <button
-                        onClick={() => {
-                            if (onRefresh) onRefresh();
-                            setRowSelection({});
-                        }}
-                        className="px-3 py-2 hover:bg-slate-700 rounded-lg text-sm text-slate-300 transition-colors"
+                        onClick={() => loadLeads(page * PAGE_SIZE)}
+                        className="p-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-slate-400 hover:text-white transition-colors"
                     >
-                        Cancel
-                    </button>
-                    <button
-                        onClick={() => setIsEnrichModalOpen(true)}
-                        className="bg-lime-500 hover:bg-lime-600 text-black px-4 py-2 rounded-lg font-bold transition-colors flex items-center space-x-2 shadow-lg shadow-lime-500/20"
-                    >
-                        <Sparkles className="w-4 h-4" />
-                        <span>Enrich Selected</span>
+                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                     </button>
                 </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                <div className="overflow-x-auto max-h-[70vh]">
-                    <table className="w-full text-left text-sm text-slate-500">
-                        <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
-                            {table.getHeaderGroups().map((headerGroup) => (
-                                <tr key={headerGroup.id}>
-                                    {headerGroup.headers.map((header) => (
-                                        <th key={header.id} className="px-6 py-4 font-semibold text-slate-900 whitespace-nowrap">
+            {/* Table */}
+            <div className="bg-[#131A2E] border border-slate-800/60 rounded-2xl overflow-hidden">
+                <table className="w-full">
+                    <thead>
+                        {table.getHeaderGroups().map(hg => (
+                            <tr key={hg.id} className="border-b border-slate-800/60">
+                                {hg.headers.map(header => (
+                                    <th
+                                        key={header.id}
+                                        onClick={header.column.getToggleSortingHandler()}
+                                        className="px-4 py-3 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors"
+                                    >
+                                        <div className="flex items-center gap-1">
                                             {flexRender(header.column.columnDef.header, header.getContext())}
-                                        </th>
-                                    ))}
-                                </tr>
-                            ))}
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {table.getRowModel().rows.length ? (
-                                table.getRowModel().rows.map((row) => (
-                                    <tr key={row.id} className={cn("hover:bg-slate-50 transition-colors", row.getIsSelected() && "bg-slate-50")}>
-                                        {row.getVisibleCells().map((cell) => (
-                                            <td key={cell.id} className="px-6 py-4 whitespace-nowrap">
-                                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                            </td>
-                                        ))}
-                                    </tr>
-                                ))
-                            ) : (
-                                <tr>
-                                    <td colSpan={columns.length} className="px-6 py-8 text-center text-slate-500">
-                                        No leads found. Import some data to get started.
+                                            <ArrowUpDown className="w-3 h-3 opacity-40" />
+                                        </div>
+                                    </th>
+                                ))}
+                            </tr>
+                        ))}
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/30">
+                        {table.getRowModel().rows.map(row => (
+                            <tr key={row.id} className="hover:bg-white/[0.02] transition-colors">
+                                {row.getVisibleCells().map(cell => (
+                                    <td key={cell.id} className="px-4 py-3">
+                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                     </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
+                                ))}
+                            </tr>
+                        ))}
+                        {leads.length === 0 && !loading && (
+                            <tr>
+                                <td colSpan={columns.length} className="px-4 py-12 text-center text-sm text-slate-500">
+                                    No leads yet. Import from CSV or add manually.
+                                </td>
+                            </tr>
+                        )}
+                    </tbody>
+                </table>
             </div>
 
-            <BatchEnrichmentModal
-                isOpen={isEnrichModalOpen}
-                onClose={() => setIsEnrichModalOpen(false)}
-                selectedLeadIds={selectedIds}
-                availableColumns={['first_name', 'last_name', 'email', 'company', ...dynamicColumns.map(d => d.id as string).filter(id => id?.startsWith('custom_')).map(id => id?.replace('custom_', ''))]}
-                onSuccess={(newCols) => {
-                    // Optimistic Update
-                    if (newCols && newCols.length > 0) {
-                        // We must clone data to trigger React re-render if we want optimistic UI
-                        // But data is a prop. We can't easily clone it up-stream without ControlPanel changes.
-                        // ALTERNATIVE: Just force a refresh after a short delay, 
-                        // and rely on the "Processing" indicator from the modal to have set expectations.
-
-                        // For now, let's just Refresh after 2 seconds. 
-                        // The user is angry about "no field added". 
-                        // If we refresh, the column will appear (even if values are null initially, the column exists in custom_data if backend saved it).
-                        // Wait, backend saves keys only when done?
-                        // No, we need to save "pending" status or similar? 
-
-                        // Let's rely on the backend being fast now that it's unblocked + refresh.
-                        setTimeout(() => {
-                            if (onRefresh) onRefresh();
-                        }, 1000);
-
-                        // Also poll again after 5s to catch stragglers
-                        setTimeout(() => {
-                            if (onRefresh) onRefresh();
-                        }, 5000);
-                    } else {
-                        if (onRefresh) onRefresh();
-                    }
-                    setRowSelection({});
-                }}
-            />
+            {/* Pagination */}
+            {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-4">
+                    <span className="text-xs text-slate-500">
+                        Page {page + 1} of {totalPages}
+                    </span>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setPage(p => Math.max(0, p - 1))}
+                            disabled={page === 0}
+                            className="p-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-slate-400 hover:text-white disabled:opacity-30 transition-all"
+                        >
+                            <ChevronLeft className="w-4 h-4" />
+                        </button>
+                        <button
+                            onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                            disabled={page >= totalPages - 1}
+                            className="p-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-slate-400 hover:text-white disabled:opacity-30 transition-all"
+                        >
+                            <ChevronRight className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
-

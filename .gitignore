@@ -4,6 +4,7 @@ Thumbs.db
 
 # Environments
 venv/
+.venv/
 env/
 .env
 #new chnage

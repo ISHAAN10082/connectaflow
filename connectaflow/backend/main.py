@@ -1,37 +1,74 @@
+"""
+Connectaflow V2 — Main application entry point.
+"""
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os
+from loguru import logger
 
-load_dotenv()
-
-from contextlib import asynccontextmanager
+from config import settings
 from database import create_db_and_tables
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting Connectaflow V2...")
     create_db_and_tables()
+
+    if not settings.has_any_llm_provider():
+        logger.warning("No LLM providers configured! Set GROQ_API_KEY or GEMINI_API_KEY in .env")
+    else:
+        providers = []
+        if settings.GROQ_API_KEY:
+            providers.append("Groq")
+        if settings.GEMINI_API_KEY:
+            providers.append("Gemini")
+        logger.info(f"LLM providers: {', '.join(providers)}")
+
+    logger.info(f"CORS origins: {settings.cors_origins_list}")
     yield
+    logger.info("Shutting down Connectaflow V2")
 
-app = FastAPI(title="Connectaflow API", version="0.1.0", lifespan=lifespan)
 
-from api import leads, enrichment
-app.include_router(leads.router)
-app.include_router(enrichment.router)
+app = FastAPI(
+    title="Connectaflow",
+    description="AI-Powered GTM Intelligence Platform",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
-# CORS Setup
+# CORS from environment
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://172.20.10.2:3000"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Connectaflow Backend is running"}
+# Register routers
+from api.leads import router as leads_router
+from api.enrichment import router as enrichment_router
+from api.icp import router as icp_router
+from api.signals import router as signals_router
+from api.playbooks import router as playbooks_router
+from api.gtm import router as gtm_router
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+app.include_router(leads_router, prefix="/api")
+app.include_router(enrichment_router, prefix="/api")
+app.include_router(icp_router, prefix="/api")
+app.include_router(signals_router, prefix="/api")
+app.include_router(playbooks_router, prefix="/api")
+app.include_router(gtm_router, prefix="/api")
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "status": "ok",
+        "version": "2.0.0",
+        "providers": {
+            "groq": bool(settings.GROQ_API_KEY),
+            "gemini": bool(settings.GEMINI_API_KEY),
+        },
+    }

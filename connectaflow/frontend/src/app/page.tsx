@@ -1,7 +1,5 @@
-import { ControlPanel } from "../components/ControlPanel";
+import { ControlPanel } from '@/components/ControlPanel';
 
 export default function Home() {
-  return (
-    <ControlPanel />
-  );
+  return <ControlPanel />;
 }
