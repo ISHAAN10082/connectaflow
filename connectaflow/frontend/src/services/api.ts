@@ -11,8 +11,11 @@ const api = axios.create({
 // Types
 // ─────────────────────────────────────────────────────────────
 
+export type DataValue = string | number | boolean | null | string[] | number[] | Record<string, unknown>;
+export type JsonRecord = Record<string, unknown>;
+
 export interface DataPoint {
-    value: any;
+    value: DataValue;
     confidence: number;
     source: string;
     source_url?: string;
@@ -38,7 +41,7 @@ export interface Lead {
     status: string;
     score: number;
     enrichment_status: string;
-    custom_data: Record<string, any>;
+    custom_data: JsonRecord;
     created_at: string;
     updated_at: string;
     company_profile?: Partial<CompanyProfile>;
@@ -53,6 +56,13 @@ export interface ICPDefinition {
     created_at: string;
 }
 
+export interface ICPSyncResult {
+    icp_id: string;
+    name: string;
+    rubric: ICPRubric;
+    status: string;
+}
+
 export interface ICPRubric {
     criteria: ICPCriterion[];
     required_fields: string[];
@@ -65,7 +75,7 @@ export interface ICPCriterion {
     label: string;
     weight: number;
     match_type: string;
-    match_value: any;
+    match_value: DataValue | { min?: number; max?: number };
 }
 
 export interface ICPScoreResult {
@@ -76,7 +86,7 @@ export interface ICPScoreResult {
     score_high: number | null;
     fit_category: string;
     quality_score: number;
-    criterion_scores: Record<string, any>;
+    criterion_scores: Record<string, number | null>;
     missing_fields: string[];
 }
 
@@ -115,6 +125,15 @@ export interface EnrichmentResult {
     quality_score: number;
     quality_tier: string;
     sources: string[];
+}
+
+export interface HealthStatus {
+    status: string;
+    version?: string;
+    providers?: {
+        groq?: boolean;
+        gemini?: boolean;
+    };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -194,6 +213,15 @@ export interface GTMPlayData {
     call_talk_track: string;
 }
 
+export interface ICPSuggestion {
+    icp_name: string;
+    icp_statement: string;
+    icp_priority: string;
+    firmographic_range: Record<string, string | undefined>;
+    icp_rationale: string;
+    list_sourcing_guidance: string;
+}
+
 export interface GTMContextSummary {
     id: string;
     name: string;
@@ -213,6 +241,11 @@ export interface GTMContextSummary {
 
 export interface GTMContextDetail {
     id: string;
+    company_name: string;
+    website_url: string;
+    core_problem: string;
+    product_category: string;
+    context_notes: string;
     name: string;
     product_description: string;
     target_industries: string[];
@@ -232,12 +265,19 @@ export interface GTMContextDetail {
     common_objections: string[];
     market_maturity: string;
     pricing_model: string;
-    enrichment_patterns: Record<string, any> | null;
+    icp_name: string;
+    icp_statement: string;
+    icp_priority: string;
+    firmographic_range: Record<string, string | undefined>;
+    icp_rationale: string;
+    list_sourcing_guidance: string;
+    enrichment_patterns: JsonRecord | null;
     // Children
     personas: PersonaData[];
     triggers: BuyingTriggerData[];
     signal_definitions: SignalDefinitionData[];
     plays: GTMPlayData[];
+    context_quality_score?: number;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -248,18 +288,21 @@ export const listGTMContexts = () =>
     api.get<{ contexts: GTMContextSummary[] }>('/gtm/');
 
 export const createGTMContext = (data: {
+    company_name?: string; website_url?: string; core_problem?: string; product_category?: string; context_notes?: string;
     name: string; product_description?: string; target_industries?: string[];
     customer_examples?: string[]; value_proposition?: string; competitors?: string[];
     geographic_focus?: string; avg_deal_size?: string; sales_cycle_days?: string;
     decision_process?: string; key_integrations?: string[]; why_customers_buy?: string;
     why_customers_churn?: string; common_objections?: string[]; market_maturity?: string;
     pricing_model?: string;
+    icp_name?: string; icp_statement?: string; icp_priority?: string; firmographic_range?: Record<string, string | undefined>;
+    icp_rationale?: string; list_sourcing_guidance?: string;
 }) => api.post<GTMContextDetail>('/gtm/', data);
 
 export const getGTMContext = (id: string) =>
     api.get<GTMContextDetail>(`/gtm/${id}`);
 
-export const updateGTMContext = (id: string, data: Record<string, any>) =>
+export const updateGTMContext = (id: string, data: Record<string, unknown>) =>
     api.patch<GTMContextDetail>(`/gtm/${id}`, data);
 
 export const deleteGTMContext = (id: string) =>
@@ -286,24 +329,36 @@ export const deleteSignalDef = (id: string) =>
 export const createGTMPlay = (ctxId: string, data: { name: string; icp_statement?: string; trigger_id?: string; signal_id?: string; persona_id?: string; messaging_angle?: string }) =>
     api.post<GTMPlayData>(`/gtm/${ctxId}/plays`, data);
 
-export const updateGTMPlay = (playId: string, data: Record<string, any>) =>
+export const updateGTMPlay = (playId: string, data: Record<string, unknown>) =>
     api.patch<GTMPlayData>(`/gtm/plays/${playId}`, data);
 
 export const deleteGTMPlay = (playId: string) =>
     api.delete(`/gtm/plays/${playId}`);
 
 export const generateGTMStrategy = (ctxId: string) =>
-    api.post<{ status: string; created: Record<string, any[]>; counts: Record<string, number> }>(`/gtm/${ctxId}/generate`);
+    api.post<{ status: string; created: Record<string, unknown[]>; counts: Record<string, number> }>(`/gtm/${ctxId}/generate`);
 
 export const refineFromEnrichment = (ctxId: string) =>
-    api.post<{ status: string; companies_analyzed: number; high_fit_count: number; signaled_count: number; analysis: Record<string, any> }>(`/gtm/${ctxId}/refine-from-enrichment`);
+    api.post<{ status: string; companies_analyzed: number; high_fit_count: number; signaled_count: number; analysis: JsonRecord }>(`/gtm/${ctxId}/refine-from-enrichment`);
+
+export const parseGTMContextFiles = (files: File[]) => {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+    return api.post<{ extracted: JsonRecord; context_quality_score: number }>('/gtm/context/parse', formData);
+};
+
+export const generateICPSuggestions = (ctxId: string) =>
+    api.post<{ suggestions: ICPSuggestion[] }>(`/gtm/${ctxId}/icp-suggestions`);
+
+export const generateSourcingGuide = (ctxId: string) =>
+    api.post<{ sourcing_guide: string }>(`/gtm/${ctxId}/sourcing-guide`);
 
 // ─────────────────────────────────────────────────────────────
 // API Functions
 // ─────────────────────────────────────────────────────────────
 
 // Health
-export const getHealth = () => api.get('/health');
+export const getHealth = () => api.get<HealthStatus>('/health');
 
 // Leads
 export const getLeads = (skip = 0, limit = 50) =>
@@ -384,7 +439,7 @@ export interface PlayStepData {
     play_id: string;
     step_number: number;
     step_type: string; // email | wait | task | condition
-    config: Record<string, any>;
+    config: Record<string, unknown>;
 }
 
 export interface PlayEnrollmentData {
@@ -404,7 +459,7 @@ export interface PlayData {
     playbook_id: string;
     name: string;
     description: string;
-    trigger_rules: Record<string, any>;
+    trigger_rules: Record<string, unknown>;
     priority: number;
     status: string;
     steps: PlayStepData[];
@@ -423,9 +478,9 @@ export interface PlaybookTemplate {
     plays: {
         name: string;
         description: string;
-        trigger_rules: Record<string, any>;
+        trigger_rules: Record<string, unknown>;
         priority: number;
-        steps: { step_number: number; step_type: string; config: Record<string, any> }[];
+        steps: { step_number: number; step_type: string; config: Record<string, unknown> }[];
     }[];
 }
 
@@ -448,19 +503,19 @@ export const updatePlaybook = (id: string, data: { name?: string; description?: 
 export const deletePlaybook = (id: string) =>
     api.delete(`/playbooks/${id}`);
 
-export const createPlay = (playbookId: string, data: { name: string; description?: string; trigger_rules?: Record<string, any>; priority?: number }) =>
+export const createPlay = (playbookId: string, data: { name: string; description?: string; trigger_rules?: Record<string, unknown>; priority?: number }) =>
     api.post<PlayData>(`/playbooks/${playbookId}/plays`, data);
 
-export const updatePlay = (playId: string, data: { name?: string; description?: string; trigger_rules?: Record<string, any>; priority?: number; status?: string }) =>
+export const updatePlay = (playId: string, data: { name?: string; description?: string; trigger_rules?: Record<string, unknown>; priority?: number; status?: string }) =>
     api.patch<PlayData>(`/playbooks/plays/${playId}`, data);
 
 export const deletePlay = (playId: string) =>
     api.delete(`/playbooks/plays/${playId}`);
 
-export const createPlayStep = (playId: string, data: { step_number: number; step_type: string; config: Record<string, any> }) =>
+export const createPlayStep = (playId: string, data: { step_number: number; step_type: string; config: Record<string, unknown> }) =>
     api.post<PlayStepData>(`/playbooks/plays/${playId}/steps`, data);
 
-export const updatePlayStep = (stepId: string, data: { step_number?: number; step_type?: string; config?: Record<string, any> }) =>
+export const updatePlayStep = (stepId: string, data: { step_number?: number; step_type?: string; config?: Record<string, unknown> }) =>
     api.patch<PlayStepData>(`/playbooks/steps/${stepId}`, data);
 
 export const deletePlayStep = (stepId: string) =>
@@ -491,17 +546,24 @@ export const exportEnrichedCSV = async () => {
     const { data } = await getProfiles(0, 1000);
     const profiles = data.profiles;
 
+    const formatValue = (value: DataValue | undefined) => {
+        if (value == null) return '';
+        if (Array.isArray(value)) return value.join('; ');
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    };
+
     const headers = ['domain', 'name', 'quality_score', 'quality_tier', 'employee_count', 'industry', 'business_model', 'hq_location', 'founded_year', 'sources'];
     const rows = profiles.map(p => [
         p.domain,
         p.name || '',
         (p.quality_score * 100).toFixed(0) + '%',
         p.quality_tier,
-        p.enriched_data?.employee_count?.value || '',
-        p.enriched_data?.industry?.value || '',
-        p.enriched_data?.business_model?.value || '',
-        p.enriched_data?.hq_location?.value || '',
-        p.enriched_data?.founded_year?.value || '',
+        formatValue(p.enriched_data?.employee_count?.value),
+        formatValue(p.enriched_data?.industry?.value),
+        formatValue(p.enriched_data?.business_model?.value),
+        formatValue(p.enriched_data?.hq_location?.value),
+        formatValue(p.enriched_data?.founded_year?.value),
         (p.sources_used || []).join('; '),
     ]);
 

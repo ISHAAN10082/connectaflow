@@ -3,6 +3,7 @@ Playbooks & Plays API — persona-driven engagement sequences.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
+from api.deps import get_workspace_id
 from database import get_session
 from models import (
     Playbook, Play, PlayStep, PlayEnrollment,
@@ -20,15 +21,28 @@ router = APIRouter(prefix="/playbooks", tags=["playbooks"])
 # ─── Playbook CRUD ────────────────────────────────────────────
 
 @router.get("/")
-def list_playbooks(session: Session = Depends(get_session)):
-    playbooks = session.exec(select(Playbook).order_by(Playbook.created_at.desc())).all()
+def list_playbooks(
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    playbooks = session.exec(
+        select(Playbook)
+        .where(Playbook.workspace_id == workspace_id)
+        .order_by(Playbook.created_at.desc())
+    ).all()
     result = []
     for pb in playbooks:
-        plays = session.exec(select(Play).where(Play.playbook_id == pb.id)).all()
+        plays = session.exec(
+            select(Play)
+            .where(Play.playbook_id == pb.id)
+            .where(Play.workspace_id == workspace_id)
+        ).all()
         total_enrolled = 0
         for p in plays:
             count = len(session.exec(
-                select(PlayEnrollment).where(PlayEnrollment.play_id == p.id)
+                select(PlayEnrollment)
+                .where(PlayEnrollment.play_id == p.id)
+                .where(PlayEnrollment.workspace_id == workspace_id)
             ).all())
             total_enrolled += count
         result.append({
@@ -42,8 +56,13 @@ def list_playbooks(session: Session = Depends(get_session)):
 
 
 @router.post("/")
-def create_playbook(data: PlaybookCreate, session: Session = Depends(get_session)):
+def create_playbook(
+    data: PlaybookCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pb = Playbook(
+        workspace_id=workspace_id,
         name=data.name,
         description=data.description,
         icp_id=uuid.UUID(data.icp_id) if data.icp_id else None,
@@ -55,22 +74,34 @@ def create_playbook(data: PlaybookCreate, session: Session = Depends(get_session
 
 
 @router.get("/{playbook_id}")
-def get_playbook(playbook_id: uuid.UUID, session: Session = Depends(get_session)):
+def get_playbook(
+    playbook_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
 
     plays_raw = session.exec(
-        select(Play).where(Play.playbook_id == pb.id).order_by(Play.priority.desc())
+        select(Play)
+        .where(Play.playbook_id == pb.id)
+        .where(Play.workspace_id == workspace_id)
+        .order_by(Play.priority.desc())
     ).all()
 
     plays = []
     for p in plays_raw:
         steps = session.exec(
-            select(PlayStep).where(PlayStep.play_id == p.id).order_by(PlayStep.step_number)
+            select(PlayStep)
+            .where(PlayStep.play_id == p.id)
+            .where(PlayStep.workspace_id == workspace_id)
+            .order_by(PlayStep.step_number)
         ).all()
         enrollments = session.exec(
-            select(PlayEnrollment).where(PlayEnrollment.play_id == p.id)
+            select(PlayEnrollment)
+            .where(PlayEnrollment.play_id == p.id)
+            .where(PlayEnrollment.workspace_id == workspace_id)
         ).all()
         plays.append({
             **p.model_dump(),
@@ -95,9 +126,14 @@ def get_playbook(playbook_id: uuid.UUID, session: Session = Depends(get_session)
 
 
 @router.patch("/{playbook_id}")
-def update_playbook(playbook_id: uuid.UUID, data: PlaybookUpdate, session: Session = Depends(get_session)):
+def update_playbook(
+    playbook_id: uuid.UUID,
+    data: PlaybookUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
     update = data.model_dump(exclude_unset=True)
     for k, v in update.items():
@@ -110,17 +146,32 @@ def update_playbook(playbook_id: uuid.UUID, data: PlaybookUpdate, session: Sessi
 
 
 @router.delete("/{playbook_id}")
-def delete_playbook(playbook_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_playbook(
+    playbook_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
     # Cascade: delete plays, steps, enrollments
-    plays = session.exec(select(Play).where(Play.playbook_id == pb.id)).all()
+    plays = session.exec(
+        select(Play)
+        .where(Play.playbook_id == pb.id)
+        .where(Play.workspace_id == workspace_id)
+    ).all()
     for p in plays:
-        session.exec(select(PlayStep).where(PlayStep.play_id == p.id)).all()
-        for s in session.exec(select(PlayStep).where(PlayStep.play_id == p.id)).all():
+        for s in session.exec(
+            select(PlayStep)
+            .where(PlayStep.play_id == p.id)
+            .where(PlayStep.workspace_id == workspace_id)
+        ).all():
             session.delete(s)
-        for e in session.exec(select(PlayEnrollment).where(PlayEnrollment.play_id == p.id)).all():
+        for e in session.exec(
+            select(PlayEnrollment)
+            .where(PlayEnrollment.play_id == p.id)
+            .where(PlayEnrollment.workspace_id == workspace_id)
+        ).all():
             session.delete(e)
         session.delete(p)
     session.delete(pb)
@@ -131,11 +182,17 @@ def delete_playbook(playbook_id: uuid.UUID, session: Session = Depends(get_sessi
 # ─── Play CRUD ────────────────────────────────────────────────
 
 @router.post("/{playbook_id}/plays")
-def create_play(playbook_id: uuid.UUID, data: PlayCreate, session: Session = Depends(get_session)):
+def create_play(
+    playbook_id: uuid.UUID,
+    data: PlayCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
     play = Play(
+        workspace_id=workspace_id,
         playbook_id=playbook_id,
         name=data.name,
         description=data.description,
@@ -149,9 +206,14 @@ def create_play(playbook_id: uuid.UUID, data: PlayCreate, session: Session = Dep
 
 
 @router.patch("/plays/{play_id}")
-def update_play(play_id: uuid.UUID, data: PlayUpdate, session: Session = Depends(get_session)):
+def update_play(
+    play_id: uuid.UUID,
+    data: PlayUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     play = session.get(Play, play_id)
-    if not play:
+    if not play or play.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
     update = data.model_dump(exclude_unset=True)
     for k, v in update.items():
@@ -163,13 +225,25 @@ def update_play(play_id: uuid.UUID, data: PlayUpdate, session: Session = Depends
 
 
 @router.delete("/plays/{play_id}")
-def delete_play(play_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_play(
+    play_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     play = session.get(Play, play_id)
-    if not play:
+    if not play or play.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
-    for s in session.exec(select(PlayStep).where(PlayStep.play_id == play.id)).all():
+    for s in session.exec(
+        select(PlayStep)
+        .where(PlayStep.play_id == play.id)
+        .where(PlayStep.workspace_id == workspace_id)
+    ).all():
         session.delete(s)
-    for e in session.exec(select(PlayEnrollment).where(PlayEnrollment.play_id == play.id)).all():
+    for e in session.exec(
+        select(PlayEnrollment)
+        .where(PlayEnrollment.play_id == play.id)
+        .where(PlayEnrollment.workspace_id == workspace_id)
+    ).all():
         session.delete(e)
     session.delete(play)
     session.commit()
@@ -179,11 +253,17 @@ def delete_play(play_id: uuid.UUID, session: Session = Depends(get_session)):
 # ─── Play Steps ───────────────────────────────────────────────
 
 @router.post("/plays/{play_id}/steps")
-def create_step(play_id: uuid.UUID, data: PlayStepCreate, session: Session = Depends(get_session)):
+def create_step(
+    play_id: uuid.UUID,
+    data: PlayStepCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     play = session.get(Play, play_id)
-    if not play:
+    if not play or play.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
     step = PlayStep(
+        workspace_id=workspace_id,
         play_id=play_id,
         step_number=data.step_number,
         step_type=data.step_type,
@@ -196,9 +276,14 @@ def create_step(play_id: uuid.UUID, data: PlayStepCreate, session: Session = Dep
 
 
 @router.patch("/steps/{step_id}")
-def update_step(step_id: uuid.UUID, data: PlayStepUpdate, session: Session = Depends(get_session)):
+def update_step(
+    step_id: uuid.UUID,
+    data: PlayStepUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     step = session.get(PlayStep, step_id)
-    if not step:
+    if not step or step.workspace_id != workspace_id:
         raise HTTPException(404, "Step not found")
     update = data.model_dump(exclude_unset=True)
     for k, v in update.items():
@@ -210,9 +295,13 @@ def update_step(step_id: uuid.UUID, data: PlayStepUpdate, session: Session = Dep
 
 
 @router.delete("/steps/{step_id}")
-def delete_step(step_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_step(
+    step_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     step = session.get(PlayStep, step_id)
-    if not step:
+    if not step or step.workspace_id != workspace_id:
         raise HTTPException(404, "Step not found")
     session.delete(step)
     session.commit()
@@ -222,9 +311,14 @@ def delete_step(step_id: uuid.UUID, session: Session = Depends(get_session)):
 # ─── Enrollment ───────────────────────────────────────────────
 
 @router.post("/plays/{play_id}/enroll")
-def enroll_leads(play_id: uuid.UUID, data: EnrollRequest, session: Session = Depends(get_session)):
+def enroll_leads(
+    play_id: uuid.UUID,
+    data: EnrollRequest,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     play = session.get(Play, play_id)
-    if not play:
+    if not play or play.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
 
     enrolled = []
@@ -235,12 +329,14 @@ def enroll_leads(play_id: uuid.UUID, data: EnrollRequest, session: Session = Dep
             select(PlayEnrollment).where(
                 PlayEnrollment.play_id == play_id,
                 PlayEnrollment.lead_id == lead_uuid,
+                PlayEnrollment.workspace_id == workspace_id,
             )
         ).first()
         if existing:
             continue
         lead = session.get(Lead, lead_uuid)
         enrollment = PlayEnrollment(
+            workspace_id=workspace_id,
             play_id=play_id,
             lead_id=lead_uuid,
             domain=lead.domain if lead else None,
@@ -254,11 +350,13 @@ def enroll_leads(play_id: uuid.UUID, data: EnrollRequest, session: Session = Dep
                 PlayEnrollment.play_id == play_id,
                 PlayEnrollment.domain == domain,
                 PlayEnrollment.lead_id == None,
+                PlayEnrollment.workspace_id == workspace_id,
             )
         ).first()
         if existing:
             continue
         enrollment = PlayEnrollment(
+            workspace_id=workspace_id,
             play_id=play_id,
             domain=domain,
         )
@@ -270,9 +368,15 @@ def enroll_leads(play_id: uuid.UUID, data: EnrollRequest, session: Session = Dep
 
 
 @router.get("/plays/{play_id}/enrollments")
-def get_enrollments(play_id: uuid.UUID, session: Session = Depends(get_session)):
+def get_enrollments(
+    play_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     enrollments = session.exec(
-        select(PlayEnrollment).where(PlayEnrollment.play_id == play_id)
+        select(PlayEnrollment)
+        .where(PlayEnrollment.play_id == play_id)
+        .where(PlayEnrollment.workspace_id == workspace_id)
     ).all()
     result = []
     for e in enrollments:
@@ -292,9 +396,15 @@ def get_enrollments(play_id: uuid.UUID, session: Session = Depends(get_session))
 
 
 @router.patch("/enrollments/{enrollment_id}")
-def update_enrollment(enrollment_id: uuid.UUID, status: str, current_step: Optional[int] = None, session: Session = Depends(get_session)):
+def update_enrollment(
+    enrollment_id: uuid.UUID,
+    status: str,
+    current_step: Optional[int] = None,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     enrollment = session.get(PlayEnrollment, enrollment_id)
-    if not enrollment:
+    if not enrollment or enrollment.workspace_id != workspace_id:
         raise HTTPException(404, "Enrollment not found")
     enrollment.status = status
     if current_step is not None:
@@ -309,17 +419,24 @@ def update_enrollment(enrollment_id: uuid.UUID, status: str, current_step: Optio
 # ─── Auto-Enroll (match leads against play trigger rules) ────
 
 @router.post("/{playbook_id}/auto-enroll")
-def auto_enroll(playbook_id: uuid.UUID, session: Session = Depends(get_session)):
+def auto_enroll(
+    playbook_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """
     Evaluate all scored leads against the playbook's plays' trigger rules
     and auto-enroll matching leads.
     """
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
 
     plays = session.exec(
-        select(Play).where(Play.playbook_id == pb.id, Play.status == "active").order_by(Play.priority.desc())
+        select(Play)
+        .where(Play.playbook_id == pb.id, Play.status == "active")
+        .where(Play.workspace_id == workspace_id)
+        .order_by(Play.priority.desc())
     ).all()
 
     if not plays:
@@ -329,19 +446,21 @@ def auto_enroll(playbook_id: uuid.UUID, session: Session = Depends(get_session))
     scores_by_domain = {}
     if pb.icp_id:
         scores = session.exec(
-            select(ICPScore).where(ICPScore.icp_id == pb.icp_id)
+            select(ICPScore)
+            .where(ICPScore.icp_id == pb.icp_id)
+            .where(ICPScore.workspace_id == workspace_id)
         ).all()
         for s in scores:
             scores_by_domain[s.domain] = s
 
     # Get all signals grouped by domain
-    all_signals = session.exec(select(Signal)).all()
+    all_signals = session.exec(select(Signal).where(Signal.workspace_id == workspace_id)).all()
     signals_by_domain = {}
     for sig in all_signals:
         signals_by_domain.setdefault(sig.domain, []).append(sig)
 
     # Get all leads
-    all_leads = session.exec(select(Lead)).all()
+    all_leads = session.exec(select(Lead).where(Lead.workspace_id == workspace_id)).all()
 
     enrolled_total = 0
     by_play = {}
@@ -387,11 +506,13 @@ def auto_enroll(playbook_id: uuid.UUID, session: Session = Depends(get_session))
                 select(PlayEnrollment).where(
                     PlayEnrollment.play_id == play.id,
                     PlayEnrollment.lead_id == lead.id,
+                    PlayEnrollment.workspace_id == workspace_id,
                 )
             ).first()
             if existing:
                 continue
             enrollment = PlayEnrollment(
+                workspace_id=workspace_id,
                 play_id=play.id,
                 lead_id=lead.id,
                 domain=lead.domain,
@@ -502,10 +623,15 @@ def get_templates():
 
 
 @router.post("/templates/{template_id}/apply")
-def apply_template(template_id: str, playbook_id: uuid.UUID, session: Session = Depends(get_session)):
+def apply_template(
+    template_id: str,
+    playbook_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Apply a template's plays and steps to an existing playbook."""
     pb = session.get(Playbook, playbook_id)
-    if not pb:
+    if not pb or pb.workspace_id != workspace_id:
         raise HTTPException(404, "Playbook not found")
 
     templates = get_templates()["templates"]
@@ -516,6 +642,7 @@ def apply_template(template_id: str, playbook_id: uuid.UUID, session: Session = 
     created_plays = []
     for play_tmpl in template["plays"]:
         play = Play(
+            workspace_id=workspace_id,
             playbook_id=playbook_id,
             name=play_tmpl["name"],
             description=play_tmpl.get("description", ""),
@@ -527,6 +654,7 @@ def apply_template(template_id: str, playbook_id: uuid.UUID, session: Session = 
 
         for step_tmpl in play_tmpl.get("steps", []):
             step = PlayStep(
+                workspace_id=workspace_id,
                 play_id=play.id,
                 step_number=step_tmpl["step_number"],
                 step_type=step_tmpl["step_type"],

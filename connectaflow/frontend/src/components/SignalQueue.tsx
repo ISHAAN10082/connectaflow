@@ -1,21 +1,22 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Radio, Zap, TrendingUp, AlertTriangle, Clock, ExternalLink, RefreshCw, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getSignalQueue, type SignalQueueItem } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 interface Props {
     icpId: string | null;
 }
 
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; bg: string; icon: typeof Zap }> = {
-    hiring_sdr: { label: 'Hiring SDR', color: 'text-violet-400', bg: 'bg-violet-500/10', icon: Zap },
+    hiring_sdr: { label: 'Hiring SDR', color: 'text-cyan-400', bg: 'bg-cyan-500/10', icon: Zap },
     hiring_ae: { label: 'Hiring AE', color: 'text-blue-400', bg: 'bg-blue-500/10', icon: Zap },
     hiring_vp_sales: { label: 'Hiring VP Sales', color: 'text-rose-400', bg: 'bg-rose-500/10', icon: TrendingUp },
     hiring_ai_ml: { label: 'Hiring AI/ML', color: 'text-cyan-400', bg: 'bg-cyan-500/10', icon: Zap },
-    hiring_engineering: { label: 'Hiring Engineers', color: 'text-indigo-400', bg: 'bg-indigo-500/10', icon: Zap },
-    hiring_marketing: { label: 'Hiring Marketing', color: 'text-purple-400', bg: 'bg-purple-500/10', icon: Zap },
+    hiring_engineering: { label: 'Hiring Engineers', color: 'text-teal-400', bg: 'bg-teal-500/10', icon: Zap },
+    hiring_marketing: { label: 'Hiring Marketing', color: 'text-sky-400', bg: 'bg-sky-500/10', icon: Zap },
     enterprise_pricing: { label: 'Enterprise Pricing', color: 'text-amber-400', bg: 'bg-amber-500/10', icon: TrendingUp },
     not_hiring: { label: 'Not Hiring', color: 'text-slate-400', bg: 'bg-slate-500/10', icon: AlertTriangle },
     early_stage: { label: 'Early Stage', color: 'text-orange-400', bg: 'bg-orange-500/10', icon: AlertTriangle },
@@ -26,20 +27,20 @@ export function SignalQueue({ icpId }: Props) {
     const [loading, setLoading] = useState(true);
     const [total, setTotal] = useState(0);
 
-    const loadQueue = async () => {
+    const loadQueue = useCallback(async () => {
         setLoading(true);
         try {
             const { data } = await getSignalQueue(icpId || undefined, 100);
             setQueue(data.queue || []);
             setTotal(data.total || 0);
-        } catch (err: any) {
-            toast.error('Failed to load signal queue');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to load signal queue'));
         } finally {
             setLoading(false);
         }
-    };
+    }, [icpId]);
 
-    useEffect(() => { loadQueue(); }, [icpId]);
+    useEffect(() => { loadQueue(); }, [loadQueue]);
 
     return (
         <div className="h-full overflow-y-auto" id="signal-queue">

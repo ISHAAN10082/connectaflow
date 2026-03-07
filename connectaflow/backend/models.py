@@ -6,6 +6,29 @@ import uuid
 
 
 # ─────────────────────────────────────────────────────────────
+# Workspace + ID defaults
+# ─────────────────────────────────────────────────────────────
+
+DEFAULT_WORKSPACE_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+class Workspace(SQLModel, table=True):
+    __tablename__ = "workspaces"
+    id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, primary_key=True)
+    name: str = Field(default="Default Workspace")
+    settings: Dict = Field(default={}, sa_column=Column(JSON))
+
+
+class WorkspaceMember(SQLModel, table=True):
+    __tablename__ = "workspace_members"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(foreign_key="workspaces.id", index=True)
+    email: str = Field(index=True)
+    role: str = Field(default="Admin")  # Admin | Strategist | Analyst | Viewer
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
 # Quality Architecture: DataPoint — every value carries provenance
 # ─────────────────────────────────────────────────────────────
 
@@ -25,6 +48,7 @@ class DataPoint(BaseModel):
 class CompanyProfile(SQLModel, table=True):
     __tablename__ = "company_profiles"
     domain: str = Field(primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     name: Optional[str] = None
     enriched_data: Dict = Field(default={}, sa_column=Column(JSON))
     quality_score: float = Field(default=0.0)
@@ -59,6 +83,7 @@ class ICPRubric(BaseModel):
 class ICPDefinition(SQLModel, table=True):
     __tablename__ = "icp_definitions"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     name: str
     product_description: str = ""
     customer_examples: List[str] = Field(default=[], sa_column=Column(JSON))
@@ -73,6 +98,7 @@ class ICPDefinition(SQLModel, table=True):
 class ICPScore(SQLModel, table=True):
     __tablename__ = "icp_scores"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     domain: str = Field(index=True)
     icp_id: uuid.UUID = Field(index=True)
     structured_score: Optional[float] = None
@@ -96,6 +122,7 @@ class ICPScore(SQLModel, table=True):
 class Signal(SQLModel, table=True):
     __tablename__ = "signals"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     domain: str = Field(index=True)
     signal_type: str
     strength: float = 0.0
@@ -111,6 +138,7 @@ class Signal(SQLModel, table=True):
 class Lead(SQLModel, table=True):
     __tablename__ = "leads"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: str = Field(index=True, unique=True)
@@ -151,6 +179,7 @@ class LeadUpdate(BaseModel):
 class EnrichmentJob(SQLModel, table=True):
     __tablename__ = "enrichment_jobs"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     status: str = "queued"
     total_domains: int = 0
     completed_domains: int = 0
@@ -168,6 +197,7 @@ class EnrichmentJob(SQLModel, table=True):
 class CustomField(SQLModel, table=True):
     __tablename__ = "custom_fields"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     name: str = Field(index=True)
     field_type: str
     entity_type: str = "lead"
@@ -178,6 +208,7 @@ class CustomField(SQLModel, table=True):
 class EnrichmentLog(SQLModel, table=True):
     __tablename__ = "enrichment_logs"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     lead_id: Optional[uuid.UUID] = None
     domain: Optional[str] = None
     source: str
@@ -189,18 +220,32 @@ class EnrichmentLog(SQLModel, table=True):
 class Campaign(SQLModel, table=True):
     __tablename__ = "campaigns"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     name: str
     status: str = "draft"
     template_subject: str = Field(default="")
     template_body: str = Field(default="")
     daily_limit: int = 50
     schedule_enabled: bool = True
+    # Spec-aligned campaign metadata
+    hypothesis: str = Field(default="")
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    segment_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    messaging_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    sequence_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    az_test_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    smartlead_id: Optional[str] = None
+    volume_warn_threshold: int = 200
+    volume_block_threshold: int = 50
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class CampaignVariableDef(SQLModel, table=True):
     __tablename__ = "campaign_variable_defs"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     campaign_id: uuid.UUID = Field(foreign_key="campaigns.id")
     name: str
     variable_key: str
@@ -210,6 +255,7 @@ class CampaignVariableDef(SQLModel, table=True):
 class VariableOption(SQLModel, table=True):
     __tablename__ = "variable_options"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     variable_def_id: uuid.UUID = Field(foreign_key="campaign_variable_defs.id")
     content: str
     name: str
@@ -218,6 +264,7 @@ class VariableOption(SQLModel, table=True):
 class CampaignVariant(SQLModel, table=True):
     __tablename__ = "campaign_variants"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     campaign_id: uuid.UUID = Field(foreign_key="campaigns.id")
     combination_hash: str
     sent_count: int = 0
@@ -229,6 +276,7 @@ class CampaignVariant(SQLModel, table=True):
 class ActivityLog(SQLModel, table=True):
     __tablename__ = "activity_logs"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     lead_id: uuid.UUID = Field(foreign_key="leads.id")
     campaign_id: Optional[uuid.UUID] = Field(default=None, foreign_key="campaigns.id")
     variant_id: Optional[uuid.UUID] = Field(default=None, foreign_key="campaign_variants.id")
@@ -245,6 +293,7 @@ class ActivityLog(SQLModel, table=True):
 class Playbook(SQLModel, table=True):
     __tablename__ = "playbooks"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     name: str
     description: str = ""
     icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
@@ -256,6 +305,7 @@ class Playbook(SQLModel, table=True):
 class Play(SQLModel, table=True):
     __tablename__ = "plays"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     playbook_id: uuid.UUID = Field(foreign_key="playbooks.id", index=True)
     name: str
     description: str = ""
@@ -275,6 +325,7 @@ class Play(SQLModel, table=True):
 class PlayStep(SQLModel, table=True):
     __tablename__ = "play_steps"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     play_id: uuid.UUID = Field(foreign_key="plays.id", index=True)
     step_number: int = Field(default=1)
     step_type: str  # email | wait | task | condition
@@ -289,6 +340,7 @@ class PlayStep(SQLModel, table=True):
 class PlayEnrollment(SQLModel, table=True):
     __tablename__ = "play_enrollments"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     play_id: uuid.UUID = Field(foreign_key="plays.id", index=True)
     lead_id: Optional[uuid.UUID] = Field(default=None, foreign_key="leads.id", index=True)
     domain: Optional[str] = Field(default=None, index=True)
@@ -297,6 +349,131 @@ class PlayEnrollment(SQLModel, table=True):
     enrolled_at: datetime = Field(default_factory=datetime.utcnow)
     last_step_at: Optional[datetime] = None
     step_history: List = Field(default=[], sa_column=Column(JSON))
+
+
+# ─────────────────────────────────────────────────────────────
+# List Ingestion + Segments
+# ─────────────────────────────────────────────────────────────
+
+class CompanyList(SQLModel, table=True):
+    __tablename__ = "company_lists"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    name: str = Field(default="Untitled List")
+    source: str = Field(default="csv")  # csv | api | manual
+    status: str = Field(default="ingested")  # ingested | enriching | complete | failed
+    raw_columns: Dict = Field(default={}, sa_column=Column(JSON))
+    row_count: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ListItem(SQLModel, table=True):
+    __tablename__ = "list_items"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    list_id: uuid.UUID = Field(foreign_key="company_lists.id", index=True)
+    domain: str = Field(index=True)
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = Field(default=None, index=True)
+    contact_title: Optional[str] = None
+    raw_data: Dict = Field(default={}, sa_column=Column(JSON))
+    dedupe_status: str = Field(default="new")  # new | merged | skipped | overwritten
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Segment(SQLModel, table=True):
+    __tablename__ = "segments"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    list_id: uuid.UUID = Field(foreign_key="company_lists.id", index=True)
+    name: str
+    filters: Dict = Field(default={}, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
+# Motion Intent + Messaging Studio
+# ─────────────────────────────────────────────────────────────
+
+class MotionIntent(SQLModel, table=True):
+    __tablename__ = "motion_intents"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    persona_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    name: str
+    motion_type: str = Field(default="cold")  # cold | trigger | competitive | re-engagement
+    primary_angle: str = Field(default="pain-led")
+    tone: str = Field(default="consultative")
+    cta_intent: str = Field(default="meeting")
+    notes: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MessagingSet(SQLModel, table=True):
+    __tablename__ = "messaging_sets"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    persona_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    motion_intent_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    name: str = Field(default="Messaging Set")
+    status: str = Field(default="draft")  # draft | in_review | approved | archived
+    version: int = 1
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MessagingSequence(SQLModel, table=True):
+    __tablename__ = "messaging_sequences"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    messaging_id: uuid.UUID = Field(foreign_key="messaging_sets.id", index=True)
+    step_count: int = Field(default=5)
+    cadence_config: Dict = Field(default={}, sa_column=Column(JSON))  # day offsets, send windows
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MessagingStep(SQLModel, table=True):
+    __tablename__ = "messaging_steps"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    sequence_id: uuid.UUID = Field(foreign_key="messaging_sequences.id", index=True)
+    step_number: int = Field(default=1)
+    label: str = Field(default="Step")
+    day_offset: int = Field(default=0)
+    tone: str = Field(default="neutral")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MessagingVariant(SQLModel, table=True):
+    __tablename__ = "messaging_variants"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    messaging_id: uuid.UUID = Field(foreign_key="messaging_sets.id", index=True)
+    step_number: int = Field(default=1)
+    component: str = Field(default="Subject")  # Subject | Opener | Problem | ValueProp | Story | CTA | Greeting | Closer | OptOut | AliasName
+    label: str = Field(default="A")
+    content: str = Field(default="")
+    is_active: bool = True
+    is_winner: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AZTest(SQLModel, table=True):
+    __tablename__ = "az_tests"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    campaign_id: uuid.UUID = Field(foreign_key="campaigns.id", index=True)
+    test_variable: str = Field(default="Subject")  # single variable per spec
+    confidence_threshold: float = 0.95
+    status: str = Field(default="running")  # running | complete | inconclusive
+    winner_variant_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ─── Pydantic schemas for Playbook API ───────────────────────
@@ -347,6 +524,13 @@ class GTMContext(SQLModel, table=True):
     """Top-level GTM strategy container — one per campaign thesis."""
     __tablename__ = "gtm_contexts"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    # Section A — Company context
+    company_name: str = ""
+    website_url: str = ""
+    core_problem: str = ""
+    product_category: str = ""
+    context_notes: str = ""
     name: str
     product_description: str = ""
     target_industries: List[str] = Field(default=[], sa_column=Column(JSON))
@@ -366,6 +550,13 @@ class GTMContext(SQLModel, table=True):
     common_objections: List[str] = Field(default=[], sa_column=Column(JSON))  # top 3-5 sales objections
     market_maturity: str = ""            # emerging | growing | mature | disrupted
     pricing_model: str = ""              # per-seat | usage | flat | custom enterprise
+    # ── ICP fields (single ICP per context for now) ─────────────────
+    icp_name: str = ""
+    icp_statement: str = ""
+    icp_priority: str = "Primary"        # Primary | Secondary | Experimental
+    firmographic_range: Dict = Field(default={}, sa_column=Column(JSON))
+    icp_rationale: str = ""
+    list_sourcing_guidance: str = ""
     # ── Enrichment-derived insights ───────────────────────
     enrichment_patterns: Dict = Field(default={}, sa_column=Column(JSON))  # auto-populated from enriched data
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -375,6 +566,7 @@ class GTMContext(SQLModel, table=True):
 class Persona(SQLModel, table=True):
     __tablename__ = "personas"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     gtm_context_id: uuid.UUID = Field(index=True)
     name: str                           # e.g. "The Revenue Leader"
     department: str = ""                # Sales, Marketing, Engineering, etc.
@@ -402,6 +594,7 @@ class Persona(SQLModel, table=True):
 class BuyingTrigger(SQLModel, table=True):
     __tablename__ = "buying_triggers"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     gtm_context_id: uuid.UUID = Field(index=True)
     name: str                           # e.g. "SDR Hiring Expansion"
     description: str = ""
@@ -418,6 +611,7 @@ class SignalDefinition(SQLModel, table=True):
     """Observable indicator that a trigger is happening. Linked to a trigger."""
     __tablename__ = "signal_definitions"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     gtm_context_id: uuid.UUID = Field(index=True)
     trigger_id: Optional[uuid.UUID] = Field(default=None, index=True)
     name: str                           # e.g. "LinkedIn SDR job postings"
@@ -439,6 +633,7 @@ class GTMPlay(SQLModel, table=True):
     """
     __tablename__ = "gtm_plays"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     gtm_context_id: uuid.UUID = Field(index=True)
     name: str
     icp_statement: str = ""             # "US SaaS 50-200 emp hiring SDRs"
@@ -463,6 +658,11 @@ class GTMPlay(SQLModel, table=True):
 # ─── Pydantic schemas for GTM API ────────────────────────────
 
 class GTMContextCreate(BaseModel):
+    company_name: str = ""
+    website_url: str = ""
+    core_problem: str = ""
+    product_category: str = ""
+    context_notes: str = ""
     name: str
     product_description: str = ""
     target_industries: List[str] = []
@@ -479,8 +679,19 @@ class GTMContextCreate(BaseModel):
     common_objections: List[str] = []
     market_maturity: str = ""
     pricing_model: str = ""
+    icp_name: str = ""
+    icp_statement: str = ""
+    icp_priority: str = "Primary"
+    firmographic_range: Dict = {}
+    icp_rationale: str = ""
+    list_sourcing_guidance: str = ""
 
 class GTMContextUpdate(BaseModel):
+    company_name: Optional[str] = None
+    website_url: Optional[str] = None
+    core_problem: Optional[str] = None
+    product_category: Optional[str] = None
+    context_notes: Optional[str] = None
     name: Optional[str] = None
     product_description: Optional[str] = None
     target_industries: Optional[List[str]] = None
@@ -500,6 +711,12 @@ class GTMContextUpdate(BaseModel):
     market_maturity: Optional[str] = None
     pricing_model: Optional[str] = None
     enrichment_patterns: Optional[Dict] = None
+    icp_name: Optional[str] = None
+    icp_statement: Optional[str] = None
+    icp_priority: Optional[str] = None
+    firmographic_range: Optional[Dict] = None
+    icp_rationale: Optional[str] = None
+    list_sourcing_guidance: Optional[str] = None
 
 class PersonaCreate(BaseModel):
     name: str

@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
     BarChart3, TrendingUp, Database, Sparkles,
-    CheckCircle2, AlertTriangle, RefreshCw, Loader2,
+    CheckCircle2, RefreshCw, Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getProfiles, getSignalQueue, getHealth } from '../services/api';
+import { getProfiles, getSignalQueue, getHealth, type CompanyProfile, type SignalQueueItem, type HealthStatus } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 interface KPI {
     label: string;
@@ -20,10 +21,10 @@ interface KPI {
 export const KPIDashboard = () => {
     const [kpis, setKpis] = useState<KPI[]>([]);
     const [loading, setLoading] = useState(true);
-    const [systemStatus, setSystemStatus] = useState<any>(null);
+    const [systemStatus, setSystemStatus] = useState<HealthStatus | null>(null);
     const [signalBreakdown, setSignalBreakdown] = useState<Record<string, number>>({});
 
-    const loadDashboard = async () => {
+    const loadDashboard = useCallback(async () => {
         setLoading(true);
         try {
             const [profilesResp, signalsResp, healthResp] = await Promise.all([
@@ -32,18 +33,18 @@ export const KPIDashboard = () => {
                 getHealth().catch(() => ({ data: { status: 'unknown', providers: {} } })),
             ]);
 
-            const profiles = profilesResp.data.profiles || [];
-            const signals = signalsResp.data.queue || [];
-            const health = healthResp.data;
+            const profiles: CompanyProfile[] = profilesResp.data.profiles || [];
+            const signals: SignalQueueItem[] = signalsResp.data.queue || [];
+            const health = healthResp.data as HealthStatus;
 
             setSystemStatus(health);
 
             // Compute KPIs from real data
             const totalCompanies = profiles.length;
             const avgQuality = totalCompanies > 0
-                ? profiles.reduce((acc: number, p: any) => acc + (p.quality_score || 0), 0) / totalCompanies
+                ? profiles.reduce((acc, p) => acc + (p.quality_score || 0), 0) / totalCompanies
                 : 0;
-            const highQuality = profiles.filter((p: any) => p.quality_tier === 'high').length;
+            const highQuality = profiles.filter(p => p.quality_tier === 'high').length;
             const withSignals = signals.length;
 
             // Signal type breakdown
@@ -77,26 +78,26 @@ export const KPIDashboard = () => {
                     value: withSignals.toString(),
                     sub: `${Object.keys(breakdown).length} signal types`,
                     icon: Sparkles,
-                    color: 'text-violet-400',
-                    bg: 'bg-violet-500/10',
+                    color: 'text-cyan-400',
+                    bg: 'bg-cyan-500/10',
                 },
                 {
                     label: 'Warm Leads',
-                    value: signals.filter((s: any) => s.composite_score >= 30).length.toString(),
+                    value: signals.filter(s => s.composite_score >= 30).length.toString(),
                     sub: 'Score ≥ 30',
                     icon: TrendingUp,
                     color: 'text-rose-400',
                     bg: 'bg-rose-500/10',
                 },
             ]);
-        } catch (err) {
-            toast.error('Failed to load dashboard');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to load dashboard'));
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
-    useEffect(() => { loadDashboard(); }, []);
+    useEffect(() => { loadDashboard(); }, [loadDashboard]);
 
     const SIGNAL_LABELS: Record<string, string> = {
         hiring_sdr: 'Hiring SDR/BDR',
@@ -151,7 +152,7 @@ export const KPIDashboard = () => {
                     {/* Signal breakdown */}
                     <div className="bg-[#131A2E] border border-slate-800/60 rounded-2xl p-6">
                         <h3 className="text-sm font-bold text-white mb-5 flex items-center gap-2">
-                            <Sparkles className="w-4 h-4 text-violet-400" />
+                            <Sparkles className="w-4 h-4 text-cyan-400" />
                             Signal Breakdown
                         </h3>
                         <div className="space-y-3">
@@ -164,7 +165,7 @@ export const KPIDashboard = () => {
                                             <span className="text-xs text-slate-400 w-32 truncate">{SIGNAL_LABELS[type] || type}</span>
                                             <div className="flex-1 h-2 bg-slate-800/60 rounded-full overflow-hidden">
                                                 <div
-                                                    className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full transition-all duration-700"
+                                                    className="h-full bg-gradient-to-r from-cyan-500 to-teal-500 rounded-full transition-all duration-700"
                                                     style={{ width: `${(count / maxCount) * 100}%` }}
                                                 />
                                             </div>

@@ -3,6 +3,7 @@ uvicorn
 python-multipart
 python-dotenv
 sqlmodel
+pydantic-settings
 google-generativeai
 pandas
 openpyxl
@@ -11,3 +12,11 @@ asyncpg
 alembic
 duckduckgo-search
 polars
+loguru
+orjson
+litellm
+instructor
+pypdf
+python-docx
+python-pptx
+reportlab

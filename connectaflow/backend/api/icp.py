@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from pydantic import BaseModel
 
+from api.deps import get_workspace_id
 from database import get_session
 from models import ICPDefinition, ICPScore, CompanyProfile, ICPRubric
 from services.intelligence.icp_builder import generate_icp
@@ -30,7 +31,11 @@ class ICPScoreBatchRequest(BaseModel):
 
 
 @router.post("/generate")
-async def generate_icp_endpoint(req: ICPGenerateRequest, session: Session = Depends(get_session)):
+async def generate_icp_endpoint(
+    req: ICPGenerateRequest,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """
     Generate ICP via 3-pass Constitutional AI.
     Returns SSE stream of generation progress.
@@ -61,6 +66,7 @@ async def generate_icp_endpoint(req: ICPGenerateRequest, session: Session = Depe
         try:
             icp = task.result()
             # Persist
+            icp.workspace_id = workspace_id
             session.add(icp)
             session.commit()
             session.refresh(icp)
@@ -77,7 +83,11 @@ async def generate_icp_endpoint(req: ICPGenerateRequest, session: Session = Depe
 
 
 @router.post("/generate-sync")
-async def generate_icp_sync(req: ICPGenerateRequest, session: Session = Depends(get_session)):
+async def generate_icp_sync(
+    req: ICPGenerateRequest,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Generate ICP synchronously (non-streaming). Simpler for debugging."""
     try:
         icp = await generate_icp(
@@ -85,6 +95,7 @@ async def generate_icp_sync(req: ICPGenerateRequest, session: Session = Depends(
             customer_examples=req.customer_examples,
             name=req.name,
         )
+        icp.workspace_id = workspace_id
         session.add(icp)
         session.commit()
         session.refresh(icp)
@@ -94,26 +105,37 @@ async def generate_icp_sync(req: ICPGenerateRequest, session: Session = Depends(
 
 
 @router.get("/")
-async def list_icps(session: Session = Depends(get_session)):
+async def list_icps(
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """List all saved ICP definitions."""
-    icps = session.exec(select(ICPDefinition)).all()
+    icps = session.exec(select(ICPDefinition).where(ICPDefinition.workspace_id == workspace_id)).all()
     return {"icps": [{"id": str(i.id), "name": i.name, "created_at": str(i.created_at), "rubric": i.rubric} for i in icps]}
 
 
 @router.get("/{icp_id}")
-async def get_icp(icp_id: str, session: Session = Depends(get_session)):
+async def get_icp(
+    icp_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Get a single ICP with full details."""
     icp = session.get(ICPDefinition, uuid.UUID(icp_id))
-    if not icp:
+    if not icp or icp.workspace_id != workspace_id:
         raise HTTPException(404, "ICP not found")
     return icp
 
 
 @router.post("/score")
-async def score_batch(req: ICPScoreBatchRequest, session: Session = Depends(get_session)):
+async def score_batch(
+    req: ICPScoreBatchRequest,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Score companies against an ICP."""
     icp = session.get(ICPDefinition, uuid.UUID(req.icp_id))
-    if not icp:
+    if not icp or icp.workspace_id != workspace_id:
         raise HTTPException(404, "ICP not found")
 
     rubric = ICPRubric(**icp.rubric)
@@ -123,13 +145,17 @@ async def score_batch(req: ICPScoreBatchRequest, session: Session = Depends(get_
         profiles = [session.get(CompanyProfile, d) for d in req.domains]
         profiles = [p for p in profiles if p]
     else:
-        profiles = session.exec(select(CompanyProfile)).all()
+        profiles = session.exec(select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)).all()
 
     scores = []
     for profile in profiles:
         # Get signals for this domain
         from models import Signal
-        signals = session.exec(select(Signal).where(Signal.domain == profile.domain)).all()
+        signals = session.exec(
+            select(Signal)
+            .where(Signal.domain == profile.domain)
+            .where(Signal.workspace_id == workspace_id)
+        ).all()
 
         icp_score = score_company(
             profile=profile,
@@ -139,6 +165,7 @@ async def score_batch(req: ICPScoreBatchRequest, session: Session = Depends(get_
             neg_centroid=icp.neg_centroid,
         )
         icp_score.icp_id = icp.id
+        icp_score.workspace_id = workspace_id
 
         # Upsert score
         existing = session.exec(
@@ -173,10 +200,14 @@ async def score_batch(req: ICPScoreBatchRequest, session: Session = Depends(get_
 
 
 @router.delete("/{icp_id}")
-async def delete_icp(icp_id: str, session: Session = Depends(get_session)):
+async def delete_icp(
+    icp_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Delete an ICP definition."""
     icp = session.get(ICPDefinition, uuid.UUID(icp_id))
-    if not icp:
+    if not icp or icp.workspace_id != workspace_id:
         raise HTTPException(404, "ICP not found")
     session.delete(icp)
     session.commit()

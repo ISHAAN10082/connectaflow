@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    Target, Brain, Sparkles, Workflow, RefreshCw, Loader2, Plus, Lightbulb, ShieldCheck,
-    Compass, AlertTriangle, ListTree, Filter, FlaskRound, MessageSquare
+    Target, Brain, Sparkles, Workflow, RefreshCw, Loader2, Plus, ShieldCheck,
+    Compass, AlertTriangle, ListTree, FlaskRound, MessageSquare
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-    listGTMContexts, createGTMContext, getGTMContext, generateGTMStrategy, refineFromEnrichment,
+    listGTMContexts, createGTMContext, getGTMContext, updateGTMContext, generateGTMStrategy, refineFromEnrichment,
+    parseGTMContextFiles, generateICPSuggestions, generateSourcingGuide,
     type GTMContextSummary, type GTMContextDetail, type PersonaData, type BuyingTriggerData,
-    type SignalDefinitionData, type GTMPlayData
+    type SignalDefinitionData, type GTMPlayData, type ICPSuggestion
 } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 type TabKey = 'overview' | 'personas' | 'triggers' | 'signals' | 'plays' | 'enrichment';
 
@@ -31,13 +33,23 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
     const [generating, setGenerating] = useState(false);
     const [refining, setRefining] = useState(false);
     const [tab, setTab] = useState<TabKey>('overview');
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [demoPrefilled, setDemoPrefilled] = useState(false);
+    const initialLoadRef = useRef(false);
 
     // Form state
+    const [companyName, setCompanyName] = useState('');
+    const [websiteUrl, setWebsiteUrl] = useState('');
+    const [coreProblem, setCoreProblem] = useState('');
+    const [productCategory, setProductCategory] = useState('');
+    const [contextNotes, setContextNotes] = useState('');
     const [name, setName] = useState('');
     const [product, setProduct] = useState('');
     const [valueProp, setValueProp] = useState('');
     const [targets, setTargets] = useState('');
     const [examples, setExamples] = useState('');
+    const [competitors, setCompetitors] = useState('');
+    const [geoFocus, setGeoFocus] = useState('');
     const [dealSize, setDealSize] = useState('');
     const [salesCycle, setSalesCycle] = useState('');
     const [decisionProcess, setDecisionProcess] = useState('');
@@ -47,39 +59,93 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
     const [objections, setObjections] = useState('');
     const [pricingModel, setPricingModel] = useState('');
     const [marketMaturity, setMarketMaturity] = useState('');
+    const [icpName, setIcpName] = useState('');
+    const [icpStatement, setIcpStatement] = useState('');
+    const [icpPriority, setIcpPriority] = useState('Primary');
+    const [firmoEmployees, setFirmoEmployees] = useState('');
+    const [firmoRevenue, setFirmoRevenue] = useState('');
+    const [firmoBusinessModel, setFirmoBusinessModel] = useState('');
+    const [firmoGeography, setFirmoGeography] = useState('');
+    const [icpRationale, setIcpRationale] = useState('');
+    const [listSourcingGuidance, setListSourcingGuidance] = useState('');
+    const [icpSuggestions, setIcpSuggestions] = useState<ICPSuggestion[]>([]);
 
-    useEffect(() => {
-        loadContexts();
-    }, []);
-
-    const loadContexts = async () => {
+    const loadContexts = useCallback(async () => {
         setLoading(true);
         try {
             const { data } = await listGTMContexts();
             setContexts(data.contexts || []);
-            if (!selectedId && data.contexts?.length) {
-                selectContext(data.contexts[0].id);
-            }
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Failed to load GTM contexts');
+            return data.contexts || [];
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to load GTM contexts'));
+            return [];
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
-    const selectContext = async (id: string) => {
+    const handleLoadDemo = useCallback((silent = false) => {
+        setCompanyName('AtlasIQ');
+        setWebsiteUrl('https://atlasiq.ai');
+        setCoreProblem('Revenue teams waste hours on account research and personalization');
+        setProductCategory('Sales Engagement');
+        setName('AtlasIQ GTM');
+        setProduct('AI copilot that auto-researches accounts and drafts outbound');
+        setValueProp('Cut research time 70% and lift reply rates 2x');
+        setTargets('SaaS, Fintech, DevTools');
+        setExamples('NovaAI, PipelinePro, GrowthGrid');
+        setCompetitors('ZoomInfo, Apollo, Clay');
+        setGeoFocus('US, UK');
+        setDealSize('$20k-$80k ARR');
+        setSalesCycle('30-60 days');
+        setDecisionProcess('VP Sales evaluates → RevOps validates → Security review');
+        setIntegrations('Salesforce, HubSpot, Outreach, LinkedIn');
+        setWhyBuy('Faster pipeline creation and better personalization at scale');
+        setWhyChurn('Poor rep adoption or data quality');
+        setObjections('We already use Apollo, AI accuracy concerns');
+        setPricingModel('per-seat');
+        setMarketMaturity('growing');
+        setIcpName('Outbound-Stage SaaS');
+        setIcpStatement('US SaaS companies with 50–200 employees actively hiring SDRs');
+        setIcpPriority('Primary');
+        setFirmoEmployees('50-200');
+        setFirmoRevenue('$5M-$50M');
+        setFirmoBusinessModel('B2B SaaS');
+        setFirmoGeography('US');
+        setIcpRationale('Clear outbound motion and hiring signals indicate urgency for sales tooling');
+        setListSourcingGuidance('Apollo: US, Industry=Software/SaaS, Employees=50-200, Job keywords=SDR; Titles=VP Sales, CRO, RevOps');
+        setContextNotes('Deck highlights 3 case studies with 2x reply lift and 40% faster SDR ramp.');
+        if (!silent) toast.success('Demo context loaded');
+    }, []);
+
+    const selectContext = useCallback(async (id: string) => {
         setSelectedId(id);
         setDetail(null);
         setLoading(true);
         try {
             const { data } = await getGTMContext(id);
             setDetail(data);
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Failed to load context');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to load context'));
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        if (initialLoadRef.current) return;
+        initialLoadRef.current = true;
+        void (async () => {
+            const ctxs = await loadContexts();
+            if (!selectedId && ctxs.length) {
+                await selectContext(ctxs[0].id);
+            }
+            if (!ctxs.length && !demoPrefilled) {
+                handleLoadDemo(true);
+                setDemoPrefilled(true);
+            }
+        })();
+    }, [demoPrefilled, handleLoadDemo, loadContexts, selectContext, selectedId]);
 
     const handleCreate = async () => {
         if (!name.trim()) {
@@ -89,11 +155,18 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
         setCreating(true);
         try {
             const payload = {
+                company_name: companyName,
+                website_url: websiteUrl,
+                core_problem: coreProblem,
+                product_category: productCategory,
+                context_notes: contextNotes,
                 name,
                 product_description: product,
                 value_proposition: valueProp,
                 target_industries: parseList(targets),
                 customer_examples: parseList(examples),
+                competitors: parseList(competitors),
+                geographic_focus: geoFocus,
                 avg_deal_size: dealSize,
                 sales_cycle_days: salesCycle,
                 decision_process: decisionProcess,
@@ -103,6 +176,17 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                 common_objections: parseList(objections),
                 pricing_model: pricingModel,
                 market_maturity: marketMaturity,
+                icp_name: icpName,
+                icp_statement: icpStatement,
+                icp_priority: icpPriority,
+                firmographic_range: {
+                    employee_range: firmoEmployees,
+                    revenue_range: firmoRevenue,
+                    business_model: firmoBusinessModel,
+                    geography: firmoGeography,
+                },
+                icp_rationale: icpRationale,
+                list_sourcing_guidance: listSourcingGuidance,
             };
             const { data } = await createGTMContext(payload);
             toast.success('Context created');
@@ -112,8 +196,8 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
             setTab('overview');
             if (onICPGenerated && data.icp_id) onICPGenerated(data.icp_id);
             resetForm();
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Failed to create');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to create'));
         } finally {
             setCreating(false);
         }
@@ -127,8 +211,8 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
             toast.success('Strategy generated');
             await selectContext(selectedId);
             setTab('personas');
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Generation failed');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Generation failed'));
         } finally {
             setGenerating(false);
         }
@@ -142,19 +226,26 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
             toast.success(`Refined using ${data.companies_analyzed} companies`);
             await selectContext(selectedId);
             setTab('enrichment');
-        } catch (err: any) {
-            toast.error(err?.response?.data?.detail || 'Refine failed');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Refine failed'));
         } finally {
             setRefining(false);
         }
     };
 
     const resetForm = () => {
+        setCompanyName('');
+        setWebsiteUrl('');
+        setCoreProblem('');
+        setProductCategory('');
+        setContextNotes('');
         setName('');
         setProduct('');
         setValueProp('');
         setTargets('');
         setExamples('');
+        setCompetitors('');
+        setGeoFocus('');
         setDealSize('');
         setSalesCycle('');
         setDecisionProcess('');
@@ -164,12 +255,135 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
         setObjections('');
         setPricingModel('');
         setMarketMaturity('');
+        setIcpName('');
+        setIcpStatement('');
+        setIcpPriority('Primary');
+        setFirmoEmployees('');
+        setFirmoRevenue('');
+        setFirmoBusinessModel('');
+        setFirmoGeography('');
+        setIcpRationale('');
+        setListSourcingGuidance('');
+        setIcpSuggestions([]);
+    };
+
+    type ExtractedContext = Partial<{
+        company_name: string;
+        website_url: string;
+        core_problem: string;
+        product_category: string;
+        product_description: string;
+        value_proposition: string;
+        target_industries: string[];
+        customer_examples: string[];
+        competitors: string[];
+        geographic_focus: string | string[];
+        avg_deal_size: string;
+        sales_cycle_days: string;
+        decision_process: string;
+        key_integrations: string[];
+        why_customers_buy: string;
+        why_customers_churn: string;
+        common_objections: string[];
+        pricing_model: string;
+        market_maturity: string;
+        context_notes: string;
+    }>;
+
+    const handleParseFiles = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        try {
+            const { data } = await parseGTMContextFiles(Array.from(files));
+            const e = (data.extracted || {}) as ExtractedContext;
+            setCompanyName(e.company_name || companyName);
+            setWebsiteUrl(e.website_url || websiteUrl);
+            setCoreProblem(e.core_problem || coreProblem);
+            setProductCategory(e.product_category || productCategory);
+            setProduct(e.product_description || product);
+            setValueProp(e.value_proposition || valueProp);
+            setTargets((e.target_industries || []).join(', '));
+            setExamples((e.customer_examples || []).join(', '));
+            setCompetitors((e.competitors || []).join(', '));
+            const geo = Array.isArray(e.geographic_focus) ? e.geographic_focus.join(', ') : e.geographic_focus;
+            setGeoFocus(geo || geoFocus);
+            setDealSize(e.avg_deal_size || dealSize);
+            setSalesCycle(e.sales_cycle_days || salesCycle);
+            setDecisionProcess(e.decision_process || decisionProcess);
+            setIntegrations((e.key_integrations || []).join(', '));
+            setWhyBuy(e.why_customers_buy || whyBuy);
+            setWhyChurn(e.why_customers_churn || whyChurn);
+            setObjections((e.common_objections || []).join(', '));
+            setPricingModel(e.pricing_model || pricingModel);
+            setMarketMaturity(e.market_maturity || marketMaturity);
+            setContextNotes(e.context_notes || contextNotes);
+            toast.success(`Context parsed (${data.context_quality_score || 0}% complete)`);
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to parse context files'));
+        } finally {
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    const handleGenerateICPSuggestions = async () => {
+        if (!selectedId) {
+            toast.error('Create a context first');
+            return;
+        }
+        try {
+            const { data } = await generateICPSuggestions(selectedId);
+            setIcpSuggestions(data.suggestions || []);
+            toast.success('ICP suggestions generated');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to generate ICP suggestions'));
+        }
+    };
+
+    const applyIcpSuggestion = async (s: ICPSuggestion) => {
+        setIcpName(s.icp_name || '');
+        setIcpStatement(s.icp_statement || '');
+        setIcpPriority(s.icp_priority || 'Primary');
+        setFirmoEmployees(s.firmographic_range?.employee_range || '');
+        setFirmoRevenue(s.firmographic_range?.revenue_range || '');
+        setFirmoBusinessModel(s.firmographic_range?.business_model || '');
+        setFirmoGeography(s.firmographic_range?.geography || '');
+        setIcpRationale(s.icp_rationale || '');
+        setListSourcingGuidance(s.list_sourcing_guidance || '');
+
+        if (!selectedId) return;
+        try {
+            await updateGTMContext(selectedId, {
+                icp_name: s.icp_name,
+                icp_statement: s.icp_statement,
+                icp_priority: s.icp_priority,
+                firmographic_range: s.firmographic_range || {},
+                icp_rationale: s.icp_rationale,
+                list_sourcing_guidance: s.list_sourcing_guidance,
+            });
+            await selectContext(selectedId);
+        } catch {
+            // non-blocking
+        }
+    };
+
+    const handleGenerateSourcingGuide = async () => {
+        if (!selectedId) {
+            toast.error('Create a context first');
+            return;
+        }
+        try {
+            const { data } = await generateSourcingGuide(selectedId);
+            setListSourcingGuidance(data.sourcing_guide || '');
+            toast.success('Sourcing guide updated');
+            await selectContext(selectedId);
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to generate sourcing guide'));
+        }
     };
 
     const stats = useMemo(() => {
         if (!detail) return null;
         return [
-            { label: 'Personas', value: detail.personas?.length || 0, icon: Brain, color: 'from-violet-500 to-indigo-500' },
+            { label: 'Personas', value: detail.personas?.length || 0, icon: Brain, color: 'from-cyan-500 to-teal-500' },
             { label: 'Triggers', value: detail.triggers?.length || 0, icon: AlertTriangle, color: 'from-amber-500 to-orange-500' },
             { label: 'Signals', value: detail.signal_definitions?.length || 0, icon: Compass, color: 'from-cyan-500 to-blue-500' },
             { label: 'Plays', value: detail.plays?.length || 0, icon: Workflow, color: 'from-emerald-500 to-teal-500' },
@@ -182,7 +396,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                 {/* Header */}
                 <div className="flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-violet-500/25">
+                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500 to-teal-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
                             <Target className="w-5 h-5 text-white" />
                         </div>
                         <div>
@@ -202,7 +416,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                         <button
                             onClick={handleGenerate}
                             disabled={!selectedId || generating}
-                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 text-white font-semibold flex items-center gap-2 text-sm shadow-lg shadow-violet-500/15 disabled:opacity-40"
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-teal-600 text-white font-semibold flex items-center gap-2 text-sm shadow-lg shadow-cyan-500/15 disabled:opacity-40"
                         >
                             {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             Generate Strategy
@@ -227,7 +441,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                                         onClick={() => selectContext(ctx.id)}
                                         className={`w-full text-left px-3 py-2.5 rounded-xl border transition-all ${
                                             selectedId === ctx.id
-                                                ? 'border-violet-500/40 bg-violet-500/10 text-white'
+                                                ? 'border-cyan-500/40 bg-cyan-500/10 text-white'
                                                 : 'border-slate-800 bg-[#0A0F1E] text-slate-300 hover:border-slate-700'
                                         }`}
                                     >
@@ -251,22 +465,99 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                                 <Plus className="w-4 h-4 text-emerald-400" />
                                 <p className="text-sm font-semibold text-white">New Context</p>
                             </div>
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Name" value={name} onChange={e => setName(e.target.value)} />
-                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all min-h-[72px]" placeholder="Product description" value={product} onChange={e => setProduct(e.target.value)} />
-                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all min-h-[56px]" placeholder="Value prop" value={valueProp} onChange={e => setValueProp(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Target industries (comma separated)" value={targets} onChange={e => setTargets(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Customer examples (comma separated)" value={examples} onChange={e => setExamples(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Avg deal size (e.g. $25k-$80k ARR)" value={dealSize} onChange={e => setDealSize(e.target.value)} />
-                            <div className="grid grid-cols-2 gap-2">
-                                <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Sales cycle days" value={salesCycle} onChange={e => setSalesCycle(e.target.value)} />
-                                <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Pricing model" value={pricingModel} onChange={e => setPricingModel(e.target.value)} />
+                            <div className="flex flex-wrap gap-2">
+                                <button
+                                    onClick={handleLoadDemo}
+                                    className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-500/20"
+                                >
+                                    Load Demo Input
+                                </button>
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="px-3 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-300 text-xs font-semibold border border-cyan-500/20 hover:bg-cyan-500/20"
+                                >
+                                    Parse Context Files
+                                </button>
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".pdf,.docx,.pptx,.txt"
+                                    className="hidden"
+                                    multiple
+                                    onChange={(e) => handleParseFiles(e.target.files)}
+                                />
                             </div>
-                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all min-h-[56px]" placeholder="Decision process" value={decisionProcess} onChange={e => setDecisionProcess(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Key integrations (comma separated)" value={integrations} onChange={e => setIntegrations(e.target.value)} />
-                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all min-h-[56px]" placeholder="Why customers buy" value={whyBuy} onChange={e => setWhyBuy(e.target.value)} />
-                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all min-h-[56px]" placeholder="Why customers churn" value={whyChurn} onChange={e => setWhyChurn(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Common objections (comma separated)" value={objections} onChange={e => setObjections(e.target.value)} />
-                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all" placeholder="Market maturity" value={marketMaturity} onChange={e => setMarketMaturity(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Company name" value={companyName} onChange={e => setCompanyName(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Website URL" value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Core problem solved" value={coreProblem} onChange={e => setCoreProblem(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Product category" value={productCategory} onChange={e => setProductCategory(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Name" value={name} onChange={e => setName(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[72px]" placeholder="Product description" value={product} onChange={e => setProduct(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Value prop" value={valueProp} onChange={e => setValueProp(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Target industries (comma separated)" value={targets} onChange={e => setTargets(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Customer examples (comma separated)" value={examples} onChange={e => setExamples(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Competitors / alternatives (comma separated)" value={competitors} onChange={e => setCompetitors(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Geographic focus (e.g. US, UK, DACH)" value={geoFocus} onChange={e => setGeoFocus(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Avg deal size (e.g. $25k-$80k ARR)" value={dealSize} onChange={e => setDealSize(e.target.value)} />
+                            <div className="grid grid-cols-2 gap-2">
+                                <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Sales cycle days" value={salesCycle} onChange={e => setSalesCycle(e.target.value)} />
+                                <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Pricing model" value={pricingModel} onChange={e => setPricingModel(e.target.value)} />
+                            </div>
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Decision process" value={decisionProcess} onChange={e => setDecisionProcess(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Key integrations (comma separated)" value={integrations} onChange={e => setIntegrations(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Why customers buy" value={whyBuy} onChange={e => setWhyBuy(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Why customers churn" value={whyChurn} onChange={e => setWhyChurn(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Common objections (comma separated)" value={objections} onChange={e => setObjections(e.target.value)} />
+                            <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Market maturity" value={marketMaturity} onChange={e => setMarketMaturity(e.target.value)} />
+                            <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="Context notes (from files)" value={contextNotes} onChange={e => setContextNotes(e.target.value)} />
+
+                            <div className="pt-2 border-t border-slate-800/60 space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <p className="text-xs uppercase text-slate-500 font-semibold tracking-wider">ICP Builder</p>
+                                    <button
+                                        onClick={handleGenerateICPSuggestions}
+                                        className="text-xs text-cyan-300 hover:text-cyan-200"
+                                    >
+                                        Generate ICP Suggestions
+                                    </button>
+                                </div>
+                                <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="ICP name" value={icpName} onChange={e => setIcpName(e.target.value)} />
+                                <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="ICP statement" value={icpStatement} onChange={e => setIcpStatement(e.target.value)} />
+                                <div className="grid grid-cols-2 gap-2">
+                                    <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Employee range" value={firmoEmployees} onChange={e => setFirmoEmployees(e.target.value)} />
+                                    <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Revenue range" value={firmoRevenue} onChange={e => setFirmoRevenue(e.target.value)} />
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Business model" value={firmoBusinessModel} onChange={e => setFirmoBusinessModel(e.target.value)} />
+                                    <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Geography" value={firmoGeography} onChange={e => setFirmoGeography(e.target.value)} />
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <input className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all" placeholder="Priority (Primary/Secondary/Experimental)" value={icpPriority} onChange={e => setIcpPriority(e.target.value)} />
+                                    <button
+                                        onClick={handleGenerateSourcingGuide}
+                                        className="px-3 py-2 rounded-xl bg-[#0A0F1E] border border-slate-700/60 text-slate-300 text-xs font-semibold hover:border-slate-600"
+                                    >
+                                        Generate Sourcing Guide
+                                    </button>
+                                </div>
+                                <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="ICP rationale" value={icpRationale} onChange={e => setIcpRationale(e.target.value)} />
+                                <textarea className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all min-h-[56px]" placeholder="List sourcing guidance" value={listSourcingGuidance} onChange={e => setListSourcingGuidance(e.target.value)} />
+
+                                {icpSuggestions.length > 0 && (
+                                    <div className="space-y-2 pt-2">
+                                        {icpSuggestions.map((s, idx) => (
+                                            <button
+                                                key={idx}
+                                                onClick={() => applyIcpSuggestion(s)}
+                                                className="w-full text-left px-3 py-2 rounded-xl border border-slate-800 bg-[#0A0F1E] hover:border-cyan-500/40"
+                                            >
+                                                <p className="text-sm font-semibold text-white">{s.icp_name || `Suggestion ${idx + 1}`}</p>
+                                                <p className="text-xs text-slate-400">{s.icp_statement}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                             <button
                                 onClick={handleCreate}
                                 disabled={creating}
@@ -282,7 +573,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                     <div className="col-span-8">
                         {loading && !detail && (
                             <div className="h-48 flex items-center justify-center">
-                                <Loader2 className="w-6 h-6 text-violet-400 animate-spin" />
+                                <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
                             </div>
                         )}
 
@@ -299,6 +590,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                                                 {detail.target_industries?.map(ind => chip(ind, 'bg-slate-800 text-slate-200'))}
                                                 {detail.pricing_model && chip(detail.pricing_model, 'bg-slate-800 text-slate-200')}
                                                 {detail.avg_deal_size && chip(detail.avg_deal_size, 'bg-slate-800 text-slate-200')}
+                                                {typeof detail.context_quality_score === 'number' && chip(`Context Quality ${detail.context_quality_score}%`, 'bg-emerald-500/15 text-emerald-200')}
                                             </div>
                                         </div>
                                         {stats && (
@@ -348,7 +640,7 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
             <button
                 onClick={() => setTab(key)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
-                    active ? 'bg-violet-500/15 text-white border border-violet-500/30' : 'text-slate-400 hover:text-white'
+                    active ? 'bg-cyan-500/15 text-white border border-cyan-500/30' : 'text-slate-400 hover:text-white'
                 }`}
             >
                 {label}
@@ -364,12 +656,16 @@ const parseList = (val: string) =>
 // Overview section
 function Overview({ detail }: { detail: GTMContextDetail }) {
     const info = [
+        { label: 'Core Problem', value: detail.core_problem },
+        { label: 'Product Category', value: detail.product_category },
         { label: 'Value Proposition', value: detail.value_proposition },
         { label: 'Why Customers Buy', value: detail.why_customers_buy },
         { label: 'Why Customers Churn', value: detail.why_customers_churn },
         { label: 'Decision Process', value: detail.decision_process },
         { label: 'Common Objections', value: detail.common_objections?.join(', ') },
         { label: 'Key Integrations', value: detail.key_integrations?.join(', ') },
+        { label: 'Geographic Focus', value: detail.geographic_focus },
+        { label: 'Competitors', value: detail.competitors?.join(', ') },
         { label: 'Sales Cycle', value: detail.sales_cycle_days },
         { label: 'Avg Deal Size', value: detail.avg_deal_size },
         { label: 'Market Maturity', value: detail.market_maturity },
@@ -405,7 +701,7 @@ function Personas({ personas }: { personas: PersonaData[] }) {
                             <p className="text-sm font-semibold text-white">{p.name}</p>
                             <p className="text-xs text-slate-500">{p.department} • {p.seniority}</p>
                         </div>
-                        {chip(p.decision_role || 'Role', 'bg-violet-500/15 text-violet-200')}
+                        {chip(p.decision_role || 'Role', 'bg-cyan-500/15 text-cyan-200')}
                     </div>
                     <Field label="Titles" value={p.job_titles?.join(', ')} />
                     <Field label="KPIs" value={p.kpis?.join(', ')} />
@@ -502,7 +798,7 @@ function Plays({ plays }: { plays: GTMPlayData[] }) {
     );
 }
 
-function Enrichment({ patterns }: { patterns: Record<string, any> | null }) {
+function Enrichment({ patterns }: { patterns: Record<string, unknown> | null }) {
     if (!patterns) return <EmptyState text="No enrichment feedback yet. Run Refine from Enrichment." />;
     return (
         <div className="grid md:grid-cols-2 gap-4">

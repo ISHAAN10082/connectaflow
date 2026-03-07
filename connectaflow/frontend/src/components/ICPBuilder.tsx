@@ -1,16 +1,17 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Target, Sparkles, Loader2, ShieldCheck, AlertTriangle, CheckCircle2, ChevronDown, Plus, X, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { generateICPSync, listICPs, deleteICP, type ICPDefinition } from '../services/api';
+import { generateICPSync, listICPs, deleteICP, type ICPDefinition, type ICPSyncResult, type ICPCriterion } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 interface Props {
     onICPGenerated?: (icpId: string) => void;
 }
 
 const PASS_LABELS = [
-    { title: 'Drafting ICP', subtitle: 'Analyzing your product and customers...', icon: Sparkles, color: 'text-violet-400' },
+    { title: 'Drafting ICP', subtitle: 'Analyzing your product and customers...', icon: Sparkles, color: 'text-cyan-400' },
     { title: 'Red-Teaming', subtitle: 'Finding false positives and blind spots...', icon: AlertTriangle, color: 'text-amber-400' },
     { title: 'Building Rubric', subtitle: 'Generating scoring criteria...', icon: ShieldCheck, color: 'text-emerald-400' },
 ];
@@ -21,20 +22,20 @@ export function ICPBuilder({ onICPGenerated }: Props) {
     const [icpName, setIcpName] = useState('');
     const [generating, setGenerating] = useState(false);
     const [currentPass, setCurrentPass] = useState(-1);
-    const [result, setResult] = useState<any>(null);
-    const [savedICPs, setSavedICPs] = useState<any[]>([]);
+    const [result, setResult] = useState<ICPSyncResult | null>(null);
+    const [savedICPs, setSavedICPs] = useState<ICPDefinition[]>([]);
     const [showSaved, setShowSaved] = useState(false);
 
-    useEffect(() => {
-        loadICPs();
-    }, []);
-
-    const loadICPs = async () => {
+    const loadICPs = useCallback(async () => {
         try {
             const { data } = await listICPs();
             setSavedICPs(data.icps || []);
         } catch { }
-    };
+    }, []);
+
+    useEffect(() => {
+        loadICPs();
+    }, [loadICPs]);
 
     const addExample = () => setCustomerExamples(prev => [...prev, '']);
     const removeExample = (idx: number) => setCustomerExamples(prev => prev.filter((_, i) => i !== idx));
@@ -79,9 +80,9 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                 onICPGenerated(data.icp_id);
             }
             loadICPs();
-        } catch (err: any) {
+        } catch (err: unknown) {
             clearInterval(passTimer);
-            toast.error(`Generation failed: ${err.response?.data?.detail || err.message}`);
+            toast.error(`Generation failed: ${getErrorMessage(err, 'Unable to generate ICP')}`);
         } finally {
             setGenerating(false);
         }
@@ -103,7 +104,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                 {/* Header */}
                 <div className="mb-8">
                     <div className="flex items-center gap-3 mb-2">
-                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/20">
+                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500 to-sky-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
                             <Target className="w-5 h-5 text-white" />
                         </div>
                         <div>
@@ -128,8 +129,8 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                                 {savedICPs.map(icp => (
                                     <div key={icp.id} className="flex items-center justify-between bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 group">
                                         <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-lg bg-violet-500/10 flex items-center justify-center">
-                                                <Target className="w-4 h-4 text-violet-400" />
+                                            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                                                <Target className="w-4 h-4 text-cyan-400" />
                                             </div>
                                             <div>
                                                 <p className="text-sm font-semibold text-white">{icp.name}</p>
@@ -139,7 +140,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                                         <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <button
                                                 onClick={() => { onICPGenerated?.(icp.id); toast.success(`Selected: ${icp.name}`); }}
-                                                className="px-3 py-1.5 bg-violet-500/10 text-violet-400 rounded-lg text-xs font-semibold hover:bg-violet-500/20 transition-colors"
+                                                className="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 rounded-lg text-xs font-semibold hover:bg-cyan-500/20 transition-colors"
                                             >
                                                 Use
                                             </button>
@@ -167,7 +168,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                             value={icpName}
                             onChange={e => setIcpName(e.target.value)}
                             placeholder="e.g. Series A B2B SaaS"
-                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all"
+                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all"
                         />
                     </div>
 
@@ -179,7 +180,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                             onChange={e => setProductDesc(e.target.value)}
                             placeholder="Describe your product, who it's for, and what problem it solves..."
                             rows={4}
-                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all resize-none"
+                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all resize-none"
                         />
                     </div>
 
@@ -194,7 +195,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                                         value={ex}
                                         onChange={e => updateExample(idx, e.target.value)}
                                         placeholder={`e.g. stripe.com, notion.so`}
-                                        className="flex-1 bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none transition-all"
+                                        className="flex-1 bg-[#131A2E] border border-slate-800/60 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none transition-all"
                                     />
                                     {customerExamples.length > 1 && (
                                         <button onClick={() => removeExample(idx)} className="px-3 text-slate-500 hover:text-red-400 transition-colors">
@@ -206,7 +207,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                         </div>
                         <button
                             onClick={addExample}
-                            className="mt-2 flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 font-semibold transition-colors"
+                            className="mt-2 flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
                         >
                             <Plus className="w-3.5 h-3.5" /> Add another
                         </button>
@@ -216,7 +217,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                     <button
                         onClick={handleGenerate}
                         disabled={generating || !productDesc.trim()}
-                        className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl font-semibold text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-violet-500/15 hover:shadow-violet-500/30 flex items-center justify-center gap-2"
+                        className="w-full py-3.5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded-xl font-semibold text-sm transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-cyan-500/15 hover:shadow-cyan-500/30 flex items-center justify-center gap-2"
                     >
                         {generating ? (
                             <>
@@ -239,18 +240,18 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                             <div
                                 key={idx}
                                 className={`flex items-center gap-4 bg-[#131A2E] border rounded-xl px-5 py-4 transition-all duration-500 ${idx === currentPass
-                                        ? 'border-violet-500/30 shadow-lg shadow-violet-500/5'
+                                        ? 'border-cyan-500/30 shadow-lg shadow-cyan-500/5'
                                         : idx < currentPass
                                             ? 'border-emerald-500/20 opacity-70'
                                             : 'border-slate-800/40 opacity-30'
                                     }`}
                             >
-                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${idx < currentPass ? 'bg-emerald-500/10' : idx === currentPass ? 'bg-violet-500/10' : 'bg-slate-800/30'
+                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${idx < currentPass ? 'bg-emerald-500/10' : idx === currentPass ? 'bg-cyan-500/10' : 'bg-slate-800/30'
                                     }`}>
                                     {idx < currentPass ? (
                                         <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                                     ) : idx === currentPass ? (
-                                        <Loader2 className="w-5 h-5 text-violet-400 animate-spin" />
+                                        <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
                                     ) : (
                                         <pass.icon className="w-5 h-5 text-slate-600" />
                                     )}
@@ -285,7 +286,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                             {/* Criteria table */}
                             {result.rubric?.criteria && (
                                 <div className="space-y-2">
-                                    {result.rubric.criteria.map((c: any, idx: number) => (
+                                    {result.rubric.criteria.map((c: ICPCriterion, idx: number) => (
                                         <div key={idx} className="flex items-center justify-between bg-[#0A0F1E] rounded-xl px-4 py-3">
                                             <div className="flex items-center gap-3">
                                                 <span className="text-xs text-slate-500 w-6">{idx + 1}.</span>
@@ -297,7 +298,7 @@ export function ICPBuilder({ onICPGenerated }: Props) {
                                             <div className="flex items-center gap-3">
                                                 <div className="w-20 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                                                     <div
-                                                        className="h-full bg-gradient-to-r from-violet-500 to-indigo-500 rounded-full transition-all duration-700"
+                                                        className="h-full bg-gradient-to-r from-cyan-500 to-teal-500 rounded-full transition-all duration-700"
                                                         style={{ width: `${(c.weight || 0) * 100}%` }}
                                                     />
                                                 </div>

@@ -1,14 +1,14 @@
 "use client";
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
     useReactTable, getCoreRowModel, getSortedRowModel,
-    getFilteredRowModel, flexRender, createColumnHelper,
-    type SortingState, type ColumnDef,
+    getFilteredRowModel, flexRender,
+    type SortingState, type ColumnDef, type CellContext,
 } from '@tanstack/react-table';
 import { ArrowUpDown, Search, RefreshCw, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { getLeads, updateLead, type Lead } from '../services/api';
+import { getLeads, type Lead } from '../services/api';
 
 const QUALITY_DOT: Record<string, string> = {
     high: 'bg-emerald-400',
@@ -26,7 +26,7 @@ export function LeadTable() {
     const [globalFilter, setGlobalFilter] = useState('');
     const PAGE_SIZE = 50;
 
-    const loadLeads = async (skip = 0) => {
+    const loadLeads = useCallback(async (skip = 0) => {
         setLoading(true);
         try {
             const { data } = await getLeads(skip, PAGE_SIZE);
@@ -37,29 +37,31 @@ export function LeadTable() {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
-    useEffect(() => { loadLeads(page * PAGE_SIZE); }, [page]);
+    useEffect(() => { loadLeads(page * PAGE_SIZE); }, [loadLeads, page]);
 
-    const columns = useMemo<ColumnDef<Lead, any>[]>(() => [
+    const columns = useMemo<ColumnDef<Lead, unknown>[]>(() => [
         {
             accessorKey: 'email',
             header: 'Email',
-            cell: (info: any) => (
-                <span className="text-sm font-medium text-white">{info.getValue()}</span>
-            ),
+            cell: (info: CellContext<Lead, unknown>) => {
+                const value = info.getValue() as string | null;
+                return <span className="text-sm font-medium text-white">{value || '—'}</span>;
+            },
         },
         {
             accessorKey: 'domain',
             header: 'Domain',
-            cell: (info: any) => (
-                <span className="text-sm text-slate-400 font-mono">{info.getValue() || '—'}</span>
-            ),
+            cell: (info: CellContext<Lead, unknown>) => {
+                const value = info.getValue() as string | null;
+                return <span className="text-sm text-slate-400 font-mono">{value || '—'}</span>;
+            },
         },
         {
             id: 'company',
             header: 'Company',
-            cell: ({ row }: any) => {
+            cell: ({ row }: CellContext<Lead, unknown>) => {
                 const profile = row.original.company_profile;
                 return (
                     <span className="text-sm text-white">{profile?.name || '—'}</span>
@@ -69,7 +71,7 @@ export function LeadTable() {
         {
             id: 'quality',
             header: 'Quality',
-            cell: ({ row }: any) => {
+            cell: ({ row }: CellContext<Lead, unknown>) => {
                 const profile = row.original.company_profile;
                 if (!profile) return <span className="text-xs text-slate-600">—</span>;
                 const tier = profile.quality_tier || 'pending';
@@ -85,8 +87,8 @@ export function LeadTable() {
         {
             accessorKey: 'status',
             header: 'Status',
-            cell: (info: any) => {
-                const status = info.getValue();
+            cell: (info: CellContext<Lead, unknown>) => {
+                const status = (info.getValue() as string | null) || 'Unknown';
                 const colors: Record<string, string> = {
                     New: 'bg-blue-500/10 text-blue-400',
                     Contacted: 'bg-amber-500/10 text-amber-400',
@@ -103,8 +105,8 @@ export function LeadTable() {
         {
             accessorKey: 'enrichment_status',
             header: 'Enrichment',
-            cell: (info: any) => {
-                const s = info.getValue();
+            cell: (info: CellContext<Lead, unknown>) => {
+                const s = (info.getValue() as string | null) || 'pending';
                 const colors: Record<string, string> = {
                     pending: 'text-slate-500',
                     enriched: 'text-emerald-400',
@@ -139,7 +141,7 @@ export function LeadTable() {
                         value={globalFilter}
                         onChange={e => setGlobalFilter(e.target.value)}
                         placeholder="Search leads..."
-                        className="pl-9 pr-4 py-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-sm text-white placeholder-slate-600 focus:border-violet-500/40 outline-none w-64"
+                        className="pl-9 pr-4 py-2 bg-[#131A2E] border border-slate-800/60 rounded-xl text-sm text-white placeholder-slate-600 focus:border-cyan-500/40 outline-none w-64"
                     />
                 </div>
                 <div className="flex items-center gap-2">

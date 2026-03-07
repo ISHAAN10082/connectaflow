@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Sparkles, Upload, Loader2, CheckCircle2, XCircle, ChevronDown, ChevronRight, Globe, BarChart3, AlertTriangle, Database } from 'lucide-react';
+import { Sparkles, Upload, Loader2, ChevronDown, ChevronRight, Database } from 'lucide-react';
 import { toast } from 'sonner';
-import { importCSV, startBatchEnrichment, getJobStatus, getProfiles, scoreBatch, type CompanyProfile, type EnrichmentJobStatus, type DataPoint } from '../services/api';
+import { importCSV, startBatchEnrichment, getJobStatus, getProfiles, scoreBatch, type CompanyProfile, type EnrichmentJobStatus, type DataPoint, type ICPScoreResult, type DataValue } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 interface Props {
     icpId: string | null;
@@ -27,23 +28,29 @@ const FIT_COLORS: Record<string, { bg: string; text: string }> = {
 
 export function EnrichmentDashboard({ icpId }: Props) {
     const [domains, setDomains] = useState('');
-    const [jobId, setJobId] = useState<string | null>(null);
     const [jobStatus, setJobStatus] = useState<EnrichmentJobStatus | null>(null);
     const [profiles, setProfiles] = useState<CompanyProfile[]>([]);
-    const [scores, setScores] = useState<Record<string, any>>({});
+    const [scores, setScores] = useState<Record<string, ICPScoreResult>>({});
     const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    useEffect(() => { loadProfiles(); }, []);
+    useEffect(() => { loadProfiles(); }, [loadProfiles]);
     useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
 
-    const loadProfiles = async () => {
+    const loadProfiles = useCallback(async () => {
         try {
             const { data } = await getProfiles(0, 100);
             setProfiles(data.profiles || []);
         } catch { }
+    }, []);
+
+    const formatDataValue = (value: DataValue | undefined) => {
+        if (value == null) return '';
+        if (Array.isArray(value)) return value.join(', ');
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
     };
 
     const startPolling = useCallback((jId: string) => {
@@ -62,8 +69,8 @@ export function EnrichmentDashboard({ icpId }: Props) {
                         if (icpId) {
                             try {
                                 const { data: scoreData } = await scoreBatch(icpId);
-                                const scoreMap: Record<string, any> = {};
-                                for (const s of scoreData.scores) scoreMap[s.domain] = s;
+                                const scoreMap: Record<string, ICPScoreResult> = {};
+                                for (const s of (scoreData.scores || [])) scoreMap[s.domain] = s;
                                 setScores(scoreMap);
                             } catch { }
                         }
@@ -73,7 +80,7 @@ export function EnrichmentDashboard({ icpId }: Props) {
                 }
             } catch { }
         }, 2000);
-    }, [icpId]);
+    }, [icpId, loadProfiles]);
 
     const handleDomainSubmit = async () => {
         const domainList = domains
@@ -87,12 +94,11 @@ export function EnrichmentDashboard({ icpId }: Props) {
         setLoading(true);
         try {
             const { data } = await startBatchEnrichment(domainList, icpId || undefined);
-            setJobId(data.job_id);
             setJobStatus({ job_id: data.job_id, status: 'queued', total: data.total, completed: 0, failed: 0, progress_pct: 0, results: [] });
             startPolling(data.job_id);
             toast.success(`Enriching ${data.total} companies...`);
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'Failed to start');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to start'));
         } finally {
             setLoading(false);
         }
@@ -104,12 +110,11 @@ export function EnrichmentDashboard({ icpId }: Props) {
         setLoading(true);
         try {
             const { data } = await importCSV(file);
-            setJobId(data.job_id);
             setJobStatus({ job_id: data.job_id, status: 'queued', total: data.domains_imported, completed: 0, failed: 0, progress_pct: 0, results: [] });
             startPolling(data.job_id);
             toast.success(`Imported ${data.domains_imported} domains — enriching...`);
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'CSV import failed');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'CSV import failed'));
         } finally {
             setLoading(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
@@ -251,7 +256,7 @@ export function EnrichmentDashboard({ icpId }: Props) {
                                                             <div key={field} className="flex items-center px-4 py-3 gap-4">
                                                                 <span className="text-xs text-slate-500 font-mono w-32 shrink-0">{field}</span>
                                                                 <span className="text-sm text-white flex-1 truncate">
-                                                                    {typeof point.value === 'object' ? JSON.stringify(point.value) : String(point.value)}
+                                                                    {formatDataValue(point.value)}
                                                                 </span>
                                                                 <div className="flex items-center gap-3 shrink-0">
                                                                     <div className="w-12 h-1 bg-slate-800 rounded-full overflow-hidden">

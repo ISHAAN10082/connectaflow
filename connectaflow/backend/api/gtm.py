@@ -6,21 +6,39 @@ AI generation endpoint to auto-create all from product context.
 import uuid
 import json
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlmodel import Session, select
 from pydantic import BaseModel
 from loguru import logger
 
+from api.deps import get_workspace_id
+from config import settings
 from database import get_session
 from models import (
     GTMContext, Persona, BuyingTrigger, SignalDefinition, GTMPlay,
     GTMContextCreate, GTMContextUpdate, PersonaCreate,
     BuyingTriggerCreate, SignalDefinitionCreate, GTMPlayCreate,
-    ICPDefinition,
+    ICPDefinition, MotionIntent,
 )
 from datetime import datetime
 
 router = APIRouter(prefix="/gtm", tags=["gtm-intelligence"])
+
+
+def _context_quality(ctx: GTMContext) -> int:
+    from services.intelligence.context_parser import compute_context_quality
+    return compute_context_quality({
+        "company_name": ctx.company_name,
+        "website_url": ctx.website_url,
+        "product_description": ctx.product_description,
+        "core_problem": ctx.core_problem,
+        "product_category": ctx.product_category,
+        "pricing_model": ctx.pricing_model,
+        "avg_deal_size": ctx.avg_deal_size,
+        "customer_examples": ctx.customer_examples,
+        "competitors": ctx.competitors,
+        "geographic_focus": ctx.geographic_focus,
+    })
 
 
 # ─── Helpers ──────────────────────────────────────────────────
@@ -58,14 +76,22 @@ def _full_context(ctx: GTMContext, session: Session) -> dict:
         "triggers": [_serialize_trigger(t) for t in triggers],
         "signal_definitions": [_serialize_signal_def(s) for s in signal_defs],
         "plays": [_serialize_play(p) for p in plays],
+        "context_quality_score": _context_quality(ctx),
     }
 
 
 # ─── GTM Context CRUD ────────────────────────────────────────
 
 @router.get("/")
-def list_contexts(session: Session = Depends(get_session)):
-    ctxs = session.exec(select(GTMContext).order_by(GTMContext.created_at.desc())).all()
+def list_contexts(
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    ctxs = session.exec(
+        select(GTMContext)
+        .where(GTMContext.workspace_id == workspace_id)
+        .order_by(GTMContext.created_at.desc())
+    ).all()
     result = []
     for ctx in ctxs:
         personas = session.exec(select(Persona).where(Persona.gtm_context_id == ctx.id)).all()
@@ -83,8 +109,12 @@ def list_contexts(session: Session = Depends(get_session)):
 
 
 @router.post("/")
-def create_context(data: GTMContextCreate, session: Session = Depends(get_session)):
-    ctx = GTMContext(**data.model_dump())
+def create_context(
+    data: GTMContextCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    ctx = GTMContext(**data.model_dump(), workspace_id=workspace_id)
     session.add(ctx)
     session.commit()
     session.refresh(ctx)
@@ -92,17 +122,26 @@ def create_context(data: GTMContextCreate, session: Session = Depends(get_sessio
 
 
 @router.get("/{ctx_id}")
-def get_context(ctx_id: uuid.UUID, session: Session = Depends(get_session)):
+def get_context(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
     return _full_context(ctx, session)
 
 
 @router.patch("/{ctx_id}")
-def update_context(ctx_id: uuid.UUID, data: GTMContextUpdate, session: Session = Depends(get_session)):
+def update_context(
+    ctx_id: uuid.UUID,
+    data: GTMContextUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
     update = data.model_dump(exclude_unset=True)
     if "icp_id" in update:
@@ -117,9 +156,13 @@ def update_context(ctx_id: uuid.UUID, data: GTMContextUpdate, session: Session =
 
 
 @router.delete("/{ctx_id}")
-def delete_context(ctx_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_context(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
     # Cascade delete children
     for p in session.exec(select(Persona).where(Persona.gtm_context_id == ctx.id)).all():
@@ -135,14 +178,75 @@ def delete_context(ctx_id: uuid.UUID, session: Session = Depends(get_session)):
     return {"status": "deleted"}
 
 
+# ─── Motion Intent ───────────────────────────────────────────
+
+class MotionIntentCreate(BaseModel):
+    name: str
+    motion_type: str = "cold"
+    primary_angle: str = "pain-led"
+    tone: str = "consultative"
+    cta_intent: str = "meeting"
+    persona_id: Optional[str] = None
+    notes: str = ""
+
+
+@router.get("/{ctx_id}/motion-intents")
+def list_motion_intents(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    ctx = session.get(GTMContext, ctx_id)
+    if not ctx or ctx.workspace_id != workspace_id:
+        raise HTTPException(404, "GTM context not found")
+    intents = session.exec(
+        select(MotionIntent)
+        .where(MotionIntent.workspace_id == workspace_id)
+        .where(MotionIntent.icp_id == ctx.icp_id)
+    ).all()
+    return {"motion_intents": intents}
+
+
+@router.post("/{ctx_id}/motion-intents")
+def create_motion_intent(
+    ctx_id: uuid.UUID,
+    payload: MotionIntentCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    ctx = session.get(GTMContext, ctx_id)
+    if not ctx or ctx.workspace_id != workspace_id:
+        raise HTTPException(404, "GTM context not found")
+    mi = MotionIntent(
+        workspace_id=workspace_id,
+        icp_id=ctx.icp_id,
+        persona_id=uuid.UUID(payload.persona_id) if payload.persona_id else None,
+        name=payload.name,
+        motion_type=payload.motion_type,
+        primary_angle=payload.primary_angle,
+        tone=payload.tone,
+        cta_intent=payload.cta_intent,
+        notes=payload.notes,
+    )
+    session.add(mi)
+    session.commit()
+    session.refresh(mi)
+    return mi
+
+
 # ─── Personas CRUD ────────────────────────────────────────────
 
 @router.post("/{ctx_id}/personas")
-def create_persona(ctx_id: uuid.UUID, data: PersonaCreate, session: Session = Depends(get_session)):
+def create_persona(
+    ctx_id: uuid.UUID,
+    data: PersonaCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
-    p = Persona(gtm_context_id=ctx_id, **data.model_dump())
+    p = Persona(gtm_context_id=ctx_id, workspace_id=workspace_id, **data.model_dump())
     session.add(p)
     session.commit()
     session.refresh(p)
@@ -150,9 +254,13 @@ def create_persona(ctx_id: uuid.UUID, data: PersonaCreate, session: Session = De
 
 
 @router.delete("/personas/{persona_id}")
-def delete_persona(persona_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_persona(
+    persona_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     p = session.get(Persona, persona_id)
-    if not p:
+    if not p or p.workspace_id != workspace_id:
         raise HTTPException(404, "Persona not found")
     session.delete(p)
     session.commit()
@@ -162,11 +270,16 @@ def delete_persona(persona_id: uuid.UUID, session: Session = Depends(get_session
 # ─── Buying Triggers CRUD ────────────────────────────────────
 
 @router.post("/{ctx_id}/triggers")
-def create_trigger(ctx_id: uuid.UUID, data: BuyingTriggerCreate, session: Session = Depends(get_session)):
+def create_trigger(
+    ctx_id: uuid.UUID,
+    data: BuyingTriggerCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
-    t = BuyingTrigger(gtm_context_id=ctx_id, **data.model_dump())
+    t = BuyingTrigger(gtm_context_id=ctx_id, workspace_id=workspace_id, **data.model_dump())
     session.add(t)
     session.commit()
     session.refresh(t)
@@ -174,9 +287,13 @@ def create_trigger(ctx_id: uuid.UUID, data: BuyingTriggerCreate, session: Sessio
 
 
 @router.delete("/triggers/{trigger_id}")
-def delete_trigger(trigger_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_trigger(
+    trigger_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     t = session.get(BuyingTrigger, trigger_id)
-    if not t:
+    if not t or t.workspace_id != workspace_id:
         raise HTTPException(404, "Trigger not found")
     session.delete(t)
     session.commit()
@@ -186,12 +303,18 @@ def delete_trigger(trigger_id: uuid.UUID, session: Session = Depends(get_session
 # ─── Signal Definitions CRUD ─────────────────────────────────
 
 @router.post("/{ctx_id}/signals")
-def create_signal_def(ctx_id: uuid.UUID, data: SignalDefinitionCreate, session: Session = Depends(get_session)):
+def create_signal_def(
+    ctx_id: uuid.UUID,
+    data: SignalDefinitionCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
     s = SignalDefinition(
         gtm_context_id=ctx_id,
+        workspace_id=workspace_id,
         name=data.name,
         description=data.description,
         trigger_id=_uuid(data.trigger_id),
@@ -205,9 +328,13 @@ def create_signal_def(ctx_id: uuid.UUID, data: SignalDefinitionCreate, session: 
 
 
 @router.delete("/signals/{signal_id}")
-def delete_signal_def(signal_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_signal_def(
+    signal_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     s = session.get(SignalDefinition, signal_id)
-    if not s:
+    if not s or s.workspace_id != workspace_id:
         raise HTTPException(404, "Signal definition not found")
     session.delete(s)
     session.commit()
@@ -217,12 +344,18 @@ def delete_signal_def(signal_id: uuid.UUID, session: Session = Depends(get_sessi
 # ─── GTM Plays CRUD ──────────────────────────────────────────
 
 @router.post("/{ctx_id}/plays")
-def create_gtm_play(ctx_id: uuid.UUID, data: GTMPlayCreate, session: Session = Depends(get_session)):
+def create_gtm_play(
+    ctx_id: uuid.UUID,
+    data: GTMPlayCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
     pl = GTMPlay(
         gtm_context_id=ctx_id,
+        workspace_id=workspace_id,
         name=data.name,
         icp_statement=data.icp_statement,
         trigger_id=_uuid(data.trigger_id),
@@ -238,9 +371,14 @@ def create_gtm_play(ctx_id: uuid.UUID, data: GTMPlayCreate, session: Session = D
 
 
 @router.patch("/plays/{play_id}")
-def update_gtm_play(play_id: uuid.UUID, data: dict, session: Session = Depends(get_session)):
+def update_gtm_play(
+    play_id: uuid.UUID,
+    data: dict,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pl = session.get(GTMPlay, play_id)
-    if not pl:
+    if not pl or pl.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
     uuid_fields = {"trigger_id", "signal_id", "persona_id", "playbook_id"}
     for k, v in data.items():
@@ -255,9 +393,13 @@ def update_gtm_play(play_id: uuid.UUID, data: dict, session: Session = Depends(g
 
 
 @router.delete("/plays/{play_id}")
-def delete_gtm_play(play_id: uuid.UUID, session: Session = Depends(get_session)):
+def delete_gtm_play(
+    play_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     pl = session.get(GTMPlay, play_id)
-    if not pl:
+    if not pl or pl.workspace_id != workspace_id:
         raise HTTPException(404, "Play not found")
     session.delete(pl)
     session.commit()
@@ -275,20 +417,29 @@ class GTMGenerateRequest(BaseModel):
     geographic_focus: str = ""
 
 
-@router.post("/{ctx_id}/generate")
-async def generate_gtm_strategy(ctx_id: uuid.UUID, session: Session = Depends(get_session)):
-    """
-    AI-generate personas, buying triggers, signal definitions, and plays
-    for an existing GTM context. Uses the context's product info as input.
-    """
+class ICPSuggestion(BaseModel):
+    icp_name: str
+    icp_statement: str
+    icp_priority: str
+    firmographic_range: dict
+    icp_rationale: str
+    list_sourcing_guidance: str
+
+
+@router.post("/{ctx_id}/icp-suggestions")
+async def generate_icp_suggestions(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
 
-    import litellm
-    from config import settings
+    if not settings.has_any_llm_provider():
+        from services.intelligence.demo_data import build_demo_icp_suggestions
+        return {"suggestions": build_demo_icp_suggestions(ctx)}
 
-    # Choose provider
     if settings.GROQ_API_KEY:
         model = "groq/llama-3.3-70b-versatile"
         api_key = settings.GROQ_API_KEY
@@ -298,37 +449,180 @@ async def generate_gtm_strategy(ctx_id: uuid.UUID, session: Session = Depends(ge
     else:
         raise HTTPException(500, "No LLM provider configured")
 
-    # Build context block with all available depth
-    ctx_block = f"""PRODUCT: {ctx.product_description}
+    prompt = f"""
+Generate 3-5 ICP suggestions for outbound targeting.
+Use the product context below. Return ONLY valid JSON with key "suggestions" (array of objects).
+Each object must include: icp_name, icp_statement, icp_priority, firmographic_range (employee_range, revenue_range, business_model, geography), icp_rationale, list_sourcing_guidance.
+
+PRODUCT CONTEXT:
+Company: {ctx.company_name}
+Website: {ctx.website_url}
+Core Problem: {ctx.core_problem}
+Product Category: {ctx.product_category}
+Product Description: {ctx.product_description}
+Value Prop: {ctx.value_proposition}
+Target Industries: {', '.join(ctx.target_industries) if ctx.target_industries else 'Not specified'}
+Customer Examples: {', '.join(ctx.customer_examples) if ctx.customer_examples else 'Not specified'}
+Competitors: {', '.join(ctx.competitors) if ctx.competitors else 'Not specified'}
+Geographic Focus: {ctx.geographic_focus or 'Global'}
+Deal Size: {ctx.avg_deal_size}
+Pricing: {ctx.pricing_model}
+"""
+
+    import litellm
+    response = await litellm.acompletion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        api_key=api_key,
+        temperature=0.3,
+        max_tokens=2000,
+    )
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw.rsplit("```", 1)[0]
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        raise HTTPException(500, f"ICP suggestion parse failed: {e}")
+
+    return data
+
+
+@router.post("/{ctx_id}/sourcing-guide")
+async def generate_sourcing_guide(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    ctx = session.get(GTMContext, ctx_id)
+    if not ctx or ctx.workspace_id != workspace_id:
+        raise HTTPException(404, "GTM context not found")
+
+    if not settings.has_any_llm_provider():
+        from services.intelligence.demo_data import build_demo_sourcing_guide
+        guide = build_demo_sourcing_guide(ctx)
+        ctx.list_sourcing_guidance = guide
+        ctx.updated_at = datetime.utcnow()
+        session.add(ctx)
+        session.commit()
+        return {"sourcing_guide": guide}
+
+    if settings.GROQ_API_KEY:
+        model = "groq/llama-3.3-70b-versatile"
+        api_key = settings.GROQ_API_KEY
+    elif settings.GEMINI_API_KEY:
+        model = "gemini/gemini-2.0-flash"
+        api_key = settings.GEMINI_API_KEY
+    else:
+        raise HTTPException(500, "No LLM provider configured")
+
+    prompt = f"""
+Create a concise list sourcing guide for Apollo/Clay.
+Use the ICP statement and firmographic range to output filters and target titles.
+Return ONLY plain text (no JSON), 4-6 lines max.
+
+ICP NAME: {ctx.icp_name}
+ICP STATEMENT: {ctx.icp_statement}
+FIRMOGRAPHICS: {json.dumps(ctx.firmographic_range)}
+INDUSTRIES: {', '.join(ctx.target_industries) if ctx.target_industries else ''}
+GEOGRAPHY: {ctx.geographic_focus}
+"""
+
+    import litellm
+    response = await litellm.acompletion(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        api_key=api_key,
+        temperature=0.2,
+        max_tokens=400,
+    )
+    guide = response.choices[0].message.content.strip()
+
+    ctx.list_sourcing_guidance = guide
+    ctx.updated_at = datetime.utcnow()
+    session.add(ctx)
+    session.commit()
+
+    return {"sourcing_guide": guide}
+
+
+@router.post("/{ctx_id}/generate")
+async def generate_gtm_strategy(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """
+    AI-generate personas, buying triggers, signal definitions, and plays
+    for an existing GTM context. Uses the context's product info as input.
+    """
+    ctx = session.get(GTMContext, ctx_id)
+    if not ctx or ctx.workspace_id != workspace_id:
+        raise HTTPException(404, "GTM context not found")
+
+    result = None
+
+    if not settings.has_any_llm_provider():
+        from services.intelligence.demo_data import build_demo_gtm_strategy
+        result = build_demo_gtm_strategy(ctx)
+    else:
+        import litellm
+
+        # Choose provider
+        if settings.GROQ_API_KEY:
+            model = "groq/llama-3.3-70b-versatile"
+            api_key = settings.GROQ_API_KEY
+        elif settings.GEMINI_API_KEY:
+            model = "gemini/gemini-2.0-flash"
+            api_key = settings.GEMINI_API_KEY
+        else:
+            raise HTTPException(500, "No LLM provider configured")
+
+        # Build context block with all available depth
+        ctx_block = f"""COMPANY: {ctx.company_name or 'Not specified'}
+WEBSITE: {ctx.website_url or 'Not specified'}
+CORE PROBLEM SOLVED: {ctx.core_problem or 'Not specified'}
+PRODUCT CATEGORY: {ctx.product_category or 'Not specified'}
+PRODUCT: {ctx.product_description}
 VALUE PROPOSITION: {ctx.value_proposition}
 TARGET INDUSTRIES: {', '.join(ctx.target_industries) if ctx.target_industries else 'Not specified'}
 CUSTOMER EXAMPLES: {', '.join(ctx.customer_examples) if ctx.customer_examples else 'Not specified'}
 COMPETITORS: {', '.join(ctx.competitors) if ctx.competitors else 'Not specified'}
 GEOGRAPHIC FOCUS: {ctx.geographic_focus or 'Global'}"""
 
-    # Layer in deep discovery fields if they exist
-    if ctx.avg_deal_size:
-        ctx_block += f"\nAVG DEAL SIZE: {ctx.avg_deal_size}"
-    if ctx.sales_cycle_days:
-        ctx_block += f"\nSALES CYCLE: {ctx.sales_cycle_days}"
-    if ctx.decision_process:
-        ctx_block += f"\nDECISION PROCESS: {ctx.decision_process}"
-    if ctx.key_integrations:
-        ctx_block += f"\nKEY INTEGRATIONS: {', '.join(ctx.key_integrations)}"
-    if ctx.why_customers_buy:
-        ctx_block += f"\nWHY CUSTOMERS BUY: {ctx.why_customers_buy}"
-    if ctx.why_customers_churn:
-        ctx_block += f"\nWHY CUSTOMERS CHURN: {ctx.why_customers_churn}"
-    if ctx.common_objections:
-        ctx_block += f"\nCOMMON OBJECTIONS: {', '.join(ctx.common_objections)}"
-    if ctx.market_maturity:
-        ctx_block += f"\nMARKET MATURITY: {ctx.market_maturity}"
-    if ctx.pricing_model:
-        ctx_block += f"\nPRICING MODEL: {ctx.pricing_model}"
-    if ctx.enrichment_patterns:
-        ctx_block += f"\nENRICHMENT PATTERNS FROM SCRAPED DATA: {json.dumps(ctx.enrichment_patterns)}"
+        # Layer in deep discovery fields if they exist
+        if ctx.avg_deal_size:
+            ctx_block += f"\nAVG DEAL SIZE: {ctx.avg_deal_size}"
+        if ctx.sales_cycle_days:
+            ctx_block += f"\nSALES CYCLE: {ctx.sales_cycle_days}"
+        if ctx.decision_process:
+            ctx_block += f"\nDECISION PROCESS: {ctx.decision_process}"
+        if ctx.key_integrations:
+            ctx_block += f"\nKEY INTEGRATIONS: {', '.join(ctx.key_integrations)}"
+        if ctx.why_customers_buy:
+            ctx_block += f"\nWHY CUSTOMERS BUY: {ctx.why_customers_buy}"
+        if ctx.why_customers_churn:
+            ctx_block += f"\nWHY CUSTOMERS CHURN: {ctx.why_customers_churn}"
+        if ctx.common_objections:
+            ctx_block += f"\nCOMMON OBJECTIONS: {', '.join(ctx.common_objections)}"
+        if ctx.market_maturity:
+            ctx_block += f"\nMARKET MATURITY: {ctx.market_maturity}"
+        if ctx.pricing_model:
+            ctx_block += f"\nPRICING MODEL: {ctx.pricing_model}"
+        if ctx.icp_statement:
+            ctx_block += f"\nICP STATEMENT: {ctx.icp_statement}"
+        if ctx.icp_rationale:
+            ctx_block += f"\nICP RATIONALE: {ctx.icp_rationale}"
+        if ctx.list_sourcing_guidance:
+            ctx_block += f"\nLIST SOURCING GUIDANCE: {ctx.list_sourcing_guidance}"
+        if ctx.enrichment_patterns:
+            ctx_block += f"\nENRICHMENT PATTERNS FROM SCRAPED DATA: {json.dumps(ctx.enrichment_patterns)}"
+        if ctx.context_notes:
+            ctx_block += f"\nCONTEXT NOTES (FROM FILES): {ctx.context_notes[:2000]}"
 
-    prompt = f"""You are a world-class B2B Go-To-Market strategist who has built pipeline at companies like Gong, Outreach, and ZoomInfo. You think in terms of buyer psychology, not demographics. You use frameworks from Challenger Sale, MEDDPICC, and Jobs-to-Be-Done theory.
+        prompt = f"""You are a world-class B2B Go-To-Market strategist who has built pipeline at companies like Gong, Outreach, and ZoomInfo. You think in terms of buyer psychology, not demographics. You use frameworks from Challenger Sale, MEDDPICC, and Jobs-to-Be-Done theory.
 
 CONTEXT:
 {ctx_block}
@@ -419,29 +713,29 @@ Generate 2-4 deeply insightful personas, 3-5 buying triggers with timing, 4-6 si
 Every persona must feel like a REAL PERSON, not a template. Every trigger must explain WHY NOW. Every play must include the ACTUAL FIRST EMAIL LINE.
 Return ONLY valid JSON, no markdown fences."""
 
-    try:
-        response = await litellm.acompletion(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            api_key=api_key,
-            max_tokens=8192,
-            temperature=0.4,
-        )
-        raw = response.choices[0].message.content.strip()
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                api_key=api_key,
+                max_tokens=8192,
+                temperature=0.4,
+            )
+            raw = response.choices[0].message.content.strip()
 
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1]
-            if raw.endswith("```"):
-                raw = raw.rsplit("```", 1)[0]
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1]
+                if raw.endswith("```"):
+                    raw = raw.rsplit("```", 1)[0]
 
-        result = json.loads(raw)
-    except json.JSONDecodeError as e:
-        logger.error(f"GTM generation JSON parse error: {e}\nRaw: {raw[:500]}")
-        raise HTTPException(500, f"AI returned invalid JSON: {str(e)}")
-    except Exception as e:
-        logger.error(f"GTM generation failed: {e}")
-        raise HTTPException(500, f"AI generation failed: {str(e)}")
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.error(f"GTM generation JSON parse error: {e}\nRaw: {raw[:500]}")
+            raise HTTPException(500, f"AI returned invalid JSON: {str(e)}")
+        except Exception as e:
+            logger.error(f"GTM generation failed: {e}")
+            raise HTTPException(500, f"AI generation failed: {str(e)}")
 
     # ── Persist generated entities ────────────────────────────
     created = {"personas": [], "triggers": [], "signal_definitions": [], "plays": []}
@@ -550,7 +844,11 @@ Return ONLY valid JSON, no markdown fences."""
 # ─── Enrichment Feedback: learn from scraped company data ─────
 
 @router.post("/{ctx_id}/refine-from-enrichment")
-async def refine_from_enrichment(ctx_id: uuid.UUID, session: Session = Depends(get_session)):
+async def refine_from_enrichment(
+    ctx_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """
     Analyze all enriched company profiles and feed patterns back into the GTM strategy.
     This closes the loop: scrape → learn → refine targeting.
@@ -560,23 +858,31 @@ async def refine_from_enrichment(ctx_id: uuid.UUID, session: Session = Depends(g
     import litellm
 
     ctx = session.get(GTMContext, ctx_id)
-    if not ctx:
+    if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
 
     # Gather enriched data
-    profiles = session.exec(select(CompanyProfile).limit(200)).all()
+    profiles = session.exec(
+        select(CompanyProfile)
+        .where(CompanyProfile.workspace_id == workspace_id)
+        .limit(200)
+    ).all()
     if not profiles:
         raise HTTPException(400, "No enriched profiles yet. Run enrichment first.")
 
     # Gather ICP scores if available
     scores = {}
     if ctx.icp_id:
-        for s in session.exec(select(ICPScore).where(ICPScore.icp_id == ctx.icp_id)).all():
+        for s in session.exec(
+            select(ICPScore)
+            .where(ICPScore.icp_id == ctx.icp_id)
+            .where(ICPScore.workspace_id == workspace_id)
+        ).all():
             scores[s.domain] = {"score": s.final_score, "fit": s.fit_category, "missing": s.missing_fields}
 
     # Gather signals
     signals_by_domain = {}
-    for sig in session.exec(select(SignalModel)).all():
+    for sig in session.exec(select(SignalModel).where(SignalModel.workspace_id == workspace_id)).all():
         signals_by_domain.setdefault(sig.domain, []).append({"type": sig.signal_type, "strength": sig.strength})
 
     # Build summary for LLM
@@ -679,3 +985,31 @@ Be specific and data-driven. Reference actual companies from the data. Return ON
         "signaled_count": len(signaled),
         "analysis": analysis,
     }
+# ─── Company Context Parsing ────────────────────────────────
+
+@router.post("/context/parse")
+async def parse_context_files(
+    files: list[UploadFile] = File(...),
+):
+    """
+    Parse uploaded context files (PDF/DOCX/PPTX) and extract structured fields.
+    """
+    from services.intelligence.context_parser import extract_text_from_file, parse_context_with_llm, compute_context_quality
+
+    combined = []
+    for f in files:
+        data = await f.read()
+        text = extract_text_from_file(f.filename or "", data)
+        if text:
+            combined.append(text)
+
+    if not combined:
+        raise HTTPException(400, "No readable text found in files")
+
+    if not settings.has_any_llm_provider():
+        combined_text = "\n\n".join(combined)
+        extracted = {"context_notes": combined_text[:1200]}
+    else:
+        extracted = await parse_context_with_llm("\n\n".join(combined), {}, settings)
+    quality = compute_context_quality(extracted)
+    return {"extracted": extracted, "context_quality_score": quality}

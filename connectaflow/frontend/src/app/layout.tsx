@@ -1,10 +1,15 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Space_Grotesk, Manrope } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
 
-const inter = Inter({
-  variable: "--font-inter",
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-display",
+  subsets: ["latin"],
+});
+
+const manrope = Manrope({
+  variable: "--font-body",
   subsets: ["latin"],
 });
 
@@ -20,7 +25,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} antialiased`}>
+      <body className={`${spaceGrotesk.variable} ${manrope.variable} antialiased`}>
         {children}
         <Toaster
           position="bottom-right"

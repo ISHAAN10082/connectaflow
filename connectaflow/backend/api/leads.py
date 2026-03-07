@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
+from api.deps import get_workspace_id
 from database import get_session
 from models import Lead, LeadCreate, LeadUpdate, CustomField, CompanyProfile
 
@@ -17,9 +18,17 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 # ── Custom fields routes FIRST (fix route ordering) ──────────
 
 @router.delete("/fields/{field_name}")
-async def delete_custom_field(field_name: str, session: Session = Depends(get_session)):
+async def delete_custom_field(
+    field_name: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Delete a custom field definition."""
-    field = session.exec(select(CustomField).where(CustomField.name == field_name)).first()
+    field = session.exec(
+        select(CustomField)
+        .where(CustomField.name == field_name)
+        .where(CustomField.workspace_id == workspace_id)
+    ).first()
     if not field:
         raise HTTPException(404, "Field not found")
     session.delete(field)
@@ -28,15 +37,23 @@ async def delete_custom_field(field_name: str, session: Session = Depends(get_se
 
 
 @router.get("/fields")
-async def get_custom_fields(session: Session = Depends(get_session)):
+async def get_custom_fields(
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """List all custom field definitions."""
-    fields = session.exec(select(CustomField)).all()
+    fields = session.exec(select(CustomField).where(CustomField.workspace_id == workspace_id)).all()
     return fields
 
 
 @router.post("/fields")
-async def create_custom_field(field: CustomField, session: Session = Depends(get_session)):
+async def create_custom_field(
+    field: CustomField,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Create a new custom field definition."""
+    field.workspace_id = workspace_id
     session.add(field)
     session.commit()
     session.refresh(field)
@@ -51,16 +68,17 @@ async def get_leads(
     limit: int = Query(50, ge=1, le=500),
     status: Optional[str] = None,
     session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     """List leads with pagination."""
-    query = select(Lead)
+    query = select(Lead).where(Lead.workspace_id == workspace_id)
     if status:
         query = query.where(Lead.status == status)
     query = query.offset(skip).limit(limit)
     leads = session.exec(query).all()
 
     # Get total count
-    total_query = select(Lead)
+    total_query = select(Lead).where(Lead.workspace_id == workspace_id)
     if status:
         total_query = total_query.where(Lead.status == status)
     total = len(session.exec(total_query).all())
@@ -71,6 +89,9 @@ async def get_leads(
         lead_dict = lead.model_dump()
         if lead.domain:
             profile = session.get(CompanyProfile, lead.domain)
+            if profile:
+                if profile.workspace_id != workspace_id:
+                    profile = None
             if profile:
                 lead_dict["company_profile"] = {
                     "name": profile.name,
@@ -85,7 +106,11 @@ async def get_leads(
 
 
 @router.post("/")
-async def create_lead(lead: LeadCreate, session: Session = Depends(get_session)):
+async def create_lead(
+    lead: LeadCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Create a new lead using validated input schema."""
     new_lead = Lead(
         email=lead.email,
@@ -94,6 +119,7 @@ async def create_lead(lead: LeadCreate, session: Session = Depends(get_session))
         domain=lead.domain,
         status=lead.status,
         custom_data=lead.custom_data,
+        workspace_id=workspace_id,
     )
     session.add(new_lead)
     session.commit()
@@ -102,15 +128,22 @@ async def create_lead(lead: LeadCreate, session: Session = Depends(get_session))
 
 
 @router.get("/{lead_id}")
-async def get_lead(lead_id: str, session: Session = Depends(get_session)):
+async def get_lead(
+    lead_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Get a single lead."""
     lead = session.get(Lead, uuid.UUID(lead_id))
-    if not lead:
+    if not lead or lead.workspace_id != workspace_id:
         raise HTTPException(404, "Lead not found")
 
     result = lead.model_dump()
     if lead.domain:
         profile = session.get(CompanyProfile, lead.domain)
+        if profile:
+            if profile.workspace_id != workspace_id:
+                profile = None
         if profile:
             result["company_profile"] = {
                 "name": profile.name,
@@ -124,10 +157,15 @@ async def get_lead(lead_id: str, session: Session = Depends(get_session)):
 
 
 @router.patch("/{lead_id}")
-async def update_lead(lead_id: str, update: LeadUpdate, session: Session = Depends(get_session)):
+async def update_lead(
+    lead_id: str,
+    update: LeadUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Update a lead using validated input schema."""
     lead = session.get(Lead, uuid.UUID(lead_id))
-    if not lead:
+    if not lead or lead.workspace_id != workspace_id:
         raise HTTPException(404, "Lead not found")
 
     update_data = update.model_dump(exclude_unset=True)
@@ -142,10 +180,14 @@ async def update_lead(lead_id: str, update: LeadUpdate, session: Session = Depen
 
 
 @router.delete("/{lead_id}")
-async def delete_lead(lead_id: str, session: Session = Depends(get_session)):
+async def delete_lead(
+    lead_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
     """Delete a lead."""
     lead = session.get(Lead, uuid.UUID(lead_id))
-    if not lead:
+    if not lead or lead.workspace_id != workspace_id:
         raise HTTPException(404, "Lead not found")
     session.delete(lead)
     session.commit()

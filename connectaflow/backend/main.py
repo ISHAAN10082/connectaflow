@@ -8,12 +8,14 @@ from loguru import logger
 
 from config import settings
 from database import create_db_and_tables
+from services.bootstrap import ensure_default_workspace
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Connectaflow V2...")
     create_db_and_tables()
+    ensure_default_workspace()
 
     if not settings.has_any_llm_provider():
         logger.warning("No LLM providers configured! Set GROQ_API_KEY or GEMINI_API_KEY in .env")
@@ -53,6 +55,11 @@ from api.icp import router as icp_router
 from api.signals import router as signals_router
 from api.playbooks import router as playbooks_router
 from api.gtm import router as gtm_router
+from api.workspaces import router as workspaces_router
+from api.lists import router as lists_router
+from api.segments import router as segments_router
+from api.messaging import router as messaging_router
+from api.campaigns import router as campaigns_router
 
 app.include_router(leads_router, prefix="/api")
 app.include_router(enrichment_router, prefix="/api")
@@ -60,6 +67,11 @@ app.include_router(icp_router, prefix="/api")
 app.include_router(signals_router, prefix="/api")
 app.include_router(playbooks_router, prefix="/api")
 app.include_router(gtm_router, prefix="/api")
+app.include_router(workspaces_router, prefix="/api")
+app.include_router(lists_router, prefix="/api")
+app.include_router(segments_router, prefix="/api")
+app.include_router(messaging_router, prefix="/api")
+app.include_router(campaigns_router, prefix="/api")
 
 
 @app.get("/api/health")

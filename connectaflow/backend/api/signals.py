@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 
+from api.deps import get_workspace_id
 from database import get_session
 from models import Signal, CompanyProfile, ICPScore
 
@@ -24,12 +25,13 @@ async def get_signal_queue(
     icp_id: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     """
     Warm signal queue: ranked by composite_score = icp_score × signal_strength × recency_decay.
     This is the "who to call today" list.
     """
-    signals = session.exec(select(Signal)).all()
+    signals = session.exec(select(Signal).where(Signal.workspace_id == workspace_id)).all()
 
     # Group signals by domain
     domain_signals: dict[str, list[Signal]] = {}
@@ -40,7 +42,7 @@ async def get_signal_queue(
     for domain, sigs in domain_signals.items():
         # Get company profile
         profile = session.get(CompanyProfile, domain)
-        if not profile:
+        if not profile or profile.workspace_id != workspace_id:
             continue
 
         # Get ICP score if available
@@ -51,6 +53,7 @@ async def get_signal_queue(
                 select(ICPScore)
                 .where(ICPScore.domain == domain)
                 .where(ICPScore.icp_id == uuid.UUID(icp_id))
+                .where(ICPScore.workspace_id == workspace_id)
             ).first()
             if icp_score_obj and icp_score_obj.final_score:
                 icp_score_val = icp_score_obj.final_score
@@ -93,9 +96,10 @@ async def list_all_signals(
     signal_type: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
     session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     """List signals with optional filters."""
-    query = select(Signal)
+    query = select(Signal).where(Signal.workspace_id == workspace_id)
     if domain:
         query = query.where(Signal.domain == domain)
     if signal_type:

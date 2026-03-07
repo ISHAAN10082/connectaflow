@@ -1,22 +1,23 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
     BookOpen, Plus, Play, Pause, ChevronRight, ChevronDown, Trash2,
-    Mail, Clock, ClipboardList, GitBranch, Users, Zap, ArrowUp, ArrowDown,
-    Loader2, CheckCircle2, Target, Sparkles, Copy, LayoutTemplate, X, UserPlus,
+    Mail, Clock, ClipboardList, GitBranch, Users, Zap,
+    Loader2, Target, LayoutTemplate, X, UserPlus,
     AlertCircle, Radio
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
     listPlaybooks, createPlaybook, getPlaybook, updatePlaybook, deletePlaybook,
     createPlay, updatePlay, deletePlay,
-    createPlayStep, updatePlayStep, deletePlayStep,
+    createPlayStep, deletePlayStep,
     autoEnrollPlaybook, getPlaybookTemplates, applyPlaybookTemplate,
     listICPs,
-    type PlaybookSummary, type PlaybookDetail, type PlayData, type PlayStepData,
+    type PlaybookSummary, type PlaybookDetail, type PlayData,
     type PlaybookTemplate, type ICPDefinition,
 } from '../services/api';
+import { getErrorMessage } from '../lib/errors';
 
 interface Props {
     icpId?: string | null;
@@ -26,7 +27,7 @@ const STEP_TYPE_CONFIG: Record<string, { icon: typeof Mail; label: string; color
     email: { icon: Mail, label: 'Email', color: 'text-blue-400', bg: 'bg-blue-500/10' },
     wait: { icon: Clock, label: 'Wait', color: 'text-amber-400', bg: 'bg-amber-500/10' },
     task: { icon: ClipboardList, label: 'Task', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-    condition: { icon: GitBranch, label: 'Condition', color: 'text-purple-400', bg: 'bg-purple-500/10' },
+    condition: { icon: GitBranch, label: 'Condition', color: 'text-sky-400', bg: 'bg-sky-500/10' },
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -35,6 +36,16 @@ const STATUS_COLORS: Record<string, string> = {
     paused: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
     archived: 'text-slate-500 bg-slate-600/10 border-slate-600/20',
 };
+
+type TriggerRuleForm = {
+    fit_categories?: string[];
+    min_score?: number;
+    signal_types?: string[];
+    min_signals?: number;
+};
+
+type StepConfigValue = string | number | boolean | string[] | undefined;
+type StepConfig = Record<string, StepConfigValue>;
 
 export function PlaybookManager({ icpId }: Props) {
     const [playbooks, setPlaybooks] = useState<PlaybookSummary[]>([]);
@@ -60,21 +71,19 @@ export function PlaybookManager({ icpId }: Props) {
     // Step creation
     const [addingStepTo, setAddingStepTo] = useState<string | null>(null);
     const [newStepType, setNewStepType] = useState<string>('email');
-    const [newStepConfig, setNewStepConfig] = useState<Record<string, any>>({});
+    const [newStepConfig, setNewStepConfig] = useState<StepConfig>({});
 
     // Expanded plays
     const [expandedPlays, setExpandedPlays] = useState<Set<string>>(new Set());
 
     // Trigger rule editing
     const [editingTriggers, setEditingTriggers] = useState<string | null>(null);
-    const [triggerForm, setTriggerForm] = useState<Record<string, any>>({});
+    const [triggerForm, setTriggerForm] = useState<TriggerRuleForm>({});
 
     // Auto-enroll state
     const [enrolling, setEnrolling] = useState(false);
 
-    useEffect(() => { loadData(); }, []);
-
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         setLoading(true);
         try {
             const [pbRes, icpRes] = await Promise.all([listPlaybooks(), listICPs()]);
@@ -82,7 +91,18 @@ export function PlaybookManager({ icpId }: Props) {
             setIcps(icpRes.data.icps || []);
         } catch { }
         setLoading(false);
-    };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        const id = window.requestAnimationFrame(() => {
+            if (!cancelled) void loadData();
+        });
+        return () => {
+            cancelled = true;
+            window.cancelAnimationFrame(id);
+        };
+    }, [loadData]);
 
     const selectPlaybook = async (id: string) => {
         try {
@@ -102,8 +122,8 @@ export function PlaybookManager({ icpId }: Props) {
             setNewName(''); setNewDesc(''); setNewIcpId(icpId || '');
             await loadData();
             selectPlaybook(data.id);
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'Failed to create');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to create'));
         }
     };
 
@@ -134,8 +154,8 @@ export function PlaybookManager({ icpId }: Props) {
             setAddingPlayTo(null); setNewPlayName(''); setNewPlayDesc('');
             selectPlaybook(addingPlayTo);
             loadData();
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'Failed');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed'));
         }
     };
 
@@ -158,16 +178,40 @@ export function PlaybookManager({ icpId }: Props) {
         } catch { toast.error('Failed to save triggers'); }
     };
 
+    const toNumber = (value: StepConfigValue, fallback: number) => {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string' && value.trim()) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
+        return fallback;
+    };
+
+    const toStringValue = (value: StepConfigValue) => {
+        if (value == null) return '';
+        if (Array.isArray(value)) return value.join(', ');
+        return String(value);
+    };
+
     const handleAddStep = async (playId: string) => {
         if (!selectedPlaybook) return;
         const play = selectedPlaybook.plays.find(p => p.id === playId);
         const nextNum = play ? Math.max(...play.steps.map(s => s.step_number), 0) + 1 : 1;
 
-        let config = {};
-        if (newStepType === 'email') config = { subject: newStepConfig.subject || '', body: newStepConfig.body || '' };
-        else if (newStepType === 'wait') config = { days: parseInt(newStepConfig.days) || 3 };
-        else if (newStepType === 'task') config = { title: newStepConfig.title || '', description: newStepConfig.description || '' };
-        else if (newStepType === 'condition') config = { check: newStepConfig.check || 'email_opened', yes_step: parseInt(newStepConfig.yes_step) || nextNum + 1, no_step: parseInt(newStepConfig.no_step) || nextNum + 2 };
+        let config: Record<string, unknown> = {};
+        if (newStepType === 'email') {
+            config = { subject: toStringValue(newStepConfig.subject), body: toStringValue(newStepConfig.body) };
+        } else if (newStepType === 'wait') {
+            config = { days: toNumber(newStepConfig.days, 3) };
+        } else if (newStepType === 'task') {
+            config = { title: toStringValue(newStepConfig.title), description: toStringValue(newStepConfig.description) };
+        } else if (newStepType === 'condition') {
+            config = {
+                check: toStringValue(newStepConfig.check) || 'email_opened',
+                yes_step: toNumber(newStepConfig.yes_step, nextNum + 1),
+                no_step: toNumber(newStepConfig.no_step, nextNum + 2),
+            };
+        }
 
         try {
             await createPlayStep(playId, { step_number: nextNum, step_type: newStepType, config });
@@ -201,8 +245,8 @@ export function PlaybookManager({ icpId }: Props) {
             }
             selectPlaybook(selectedPlaybook.id);
             loadData();
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'Auto-enroll failed');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Auto-enroll failed'));
         }
         setEnrolling(false);
     };
@@ -223,8 +267,8 @@ export function PlaybookManager({ icpId }: Props) {
             setShowTemplates(false);
             selectPlaybook(selectedPlaybook.id);
             loadData();
-        } catch (err: any) {
-            toast.error(err.response?.data?.detail || 'Failed to apply template');
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to apply template'));
         }
     };
 
@@ -240,7 +284,7 @@ export function PlaybookManager({ icpId }: Props) {
     if (loading) {
         return (
             <div className="h-full flex items-center justify-center">
-                <Loader2 className="w-6 h-6 text-violet-400 animate-spin" />
+                <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
             </div>
         );
     }
@@ -268,7 +312,7 @@ export function PlaybookManager({ icpId }: Props) {
                         </button>
                         <button
                             onClick={() => setShowCreate(true)}
-                            className="px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-violet-500/15 flex items-center gap-2"
+                            className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-cyan-500/15 flex items-center gap-2"
                         >
                             <Plus className="w-4 h-4" /> New Playbook
                         </button>
@@ -277,7 +321,7 @@ export function PlaybookManager({ icpId }: Props) {
 
                 {/* ── Create Dialog ─────────────────────────────── */}
                 {showCreate && (
-                    <div className="mb-6 bg-[#131A2E] border border-violet-500/20 rounded-2xl p-6 animate-in fade-in slide-in-from-top-4 duration-300">
+                    <div className="mb-6 bg-[#131A2E] border border-cyan-500/20 rounded-2xl p-6 animate-in fade-in slide-in-from-top-4 duration-300">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-base font-bold text-white">Create Playbook</h3>
                             <button onClick={() => setShowCreate(false)} className="text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
@@ -286,17 +330,17 @@ export function PlaybookManager({ icpId }: Props) {
                             <div>
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Name</label>
                                 <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="e.g. Series A Expansion Playbook"
-                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none" />
+                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none" />
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Description</label>
                                 <input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Target persona and engagement strategy"
-                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-600 focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20 outline-none" />
+                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm placeholder-slate-600 focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 outline-none" />
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Linked ICP</label>
                                 <select value={newIcpId} onChange={e => setNewIcpId(e.target.value)}
-                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm focus:border-violet-500/40 outline-none">
+                                    className="w-full bg-[#0A0F1E] border border-slate-800/60 rounded-xl px-4 py-2.5 text-white text-sm focus:border-cyan-500/40 outline-none">
                                     <option value="">No ICP linked</option>
                                     {icps.map(icp => (
                                         <option key={icp.id} value={icp.id}>{icp.name}</option>
@@ -304,7 +348,7 @@ export function PlaybookManager({ icpId }: Props) {
                                 </select>
                             </div>
                             <button onClick={handleCreate}
-                                className="w-full py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl font-semibold text-sm transition-all">
+                                className="w-full py-2.5 bg-gradient-to-r from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white rounded-xl font-semibold text-sm transition-all">
                                 Create Playbook
                             </button>
                         </div>
@@ -365,7 +409,7 @@ export function PlaybookManager({ icpId }: Props) {
                                     key={pb.id}
                                     onClick={() => selectPlaybook(pb.id)}
                                     className={`w-full text-left bg-[#131A2E] border rounded-xl px-4 py-3.5 transition-all group ${selectedPlaybook?.id === pb.id
-                                        ? 'border-violet-500/30 shadow-lg shadow-violet-500/5'
+                                        ? 'border-cyan-500/30 shadow-lg shadow-cyan-500/5'
                                         : 'border-slate-800/60 hover:border-slate-700/60'
                                         }`}
                                 >
@@ -438,7 +482,7 @@ export function PlaybookManager({ icpId }: Props) {
 
                                         {selectedPlaybook.icp_id && (
                                             <button onClick={handleAutoEnroll} disabled={enrolling}
-                                                className="px-3 py-1.5 bg-violet-500/10 text-violet-400 rounded-lg text-xs font-semibold hover:bg-violet-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-40">
+                                                className="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 rounded-lg text-xs font-semibold hover:bg-cyan-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-40">
                                                 {enrolling ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}
                                                 Auto-Enroll Leads
                                             </button>
@@ -453,7 +497,7 @@ export function PlaybookManager({ icpId }: Props) {
                                     {selectedPlaybook.icp_id && (
                                         <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
                                             <Target className="w-3 h-3" />
-                                            Linked to ICP: <span className="text-violet-400 font-medium">{icps.find(i => i.id === selectedPlaybook.icp_id)?.name || selectedPlaybook.icp_id}</span>
+                                            Linked to ICP: <span className="text-cyan-400 font-medium">{icps.find(i => i.id === selectedPlaybook.icp_id)?.name || selectedPlaybook.icp_id}</span>
                                         </div>
                                     )}
                                 </div>
@@ -498,7 +542,7 @@ export function PlaybookManager({ icpId }: Props) {
                                             onAddStep={() => { setAddingStepTo(play.id); setNewStepType('email'); setNewStepConfig({}); }}
                                             onDeleteStep={handleDeleteStep}
                                             editingTriggers={editingTriggers === play.id}
-                                            onEditTriggers={() => { setEditingTriggers(play.id); setTriggerForm(play.trigger_rules || {}); }}
+                                            onEditTriggers={() => { setEditingTriggers(play.id); setTriggerForm((play.trigger_rules || {}) as TriggerRuleForm); }}
                                             onSaveTriggers={() => handleSaveTriggers(play.id)}
                                             onCancelTriggers={() => setEditingTriggers(null)}
                                             triggerForm={triggerForm}
@@ -537,13 +581,13 @@ interface PlayCardProps {
     onEditTriggers: () => void;
     onSaveTriggers: () => void;
     onCancelTriggers: () => void;
-    triggerForm: Record<string, any>;
-    setTriggerForm: (v: Record<string, any>) => void;
+    triggerForm: TriggerRuleForm;
+    setTriggerForm: (v: TriggerRuleForm) => void;
     addingStep: boolean;
     newStepType: string;
     setNewStepType: (v: string) => void;
-    newStepConfig: Record<string, any>;
-    setNewStepConfig: (v: Record<string, any>) => void;
+    newStepConfig: StepConfig;
+    setNewStepConfig: (v: StepConfig) => void;
     onSubmitStep: () => void;
     onCancelStep: () => void;
 }
@@ -553,7 +597,7 @@ function PlayCard({
     editingTriggers, onEditTriggers, onSaveTriggers, onCancelTriggers, triggerForm, setTriggerForm,
     addingStep, newStepType, setNewStepType, newStepConfig, setNewStepConfig, onSubmitStep, onCancelStep,
 }: PlayCardProps) {
-    const rules = play.trigger_rules || {};
+    const rules = (play.trigger_rules || {}) as TriggerRuleForm;
     const hasTriggers = Object.keys(rules).length > 0;
 
     return (
@@ -586,7 +630,7 @@ function PlayCard({
                                 <Radio className="w-3 h-3" /> Trigger Rules
                             </h5>
                             {!editingTriggers && (
-                                <button onClick={onEditTriggers} className="text-xs text-violet-400 hover:text-violet-300 font-medium">Edit</button>
+                                <button onClick={onEditTriggers} className="text-xs text-cyan-400 hover:text-cyan-300 font-medium">Edit</button>
                             )}
                         </div>
 
@@ -599,7 +643,7 @@ function PlayCard({
                                             value={(triggerForm.fit_categories || []).join(', ')}
                                             onChange={e => setTriggerForm({ ...triggerForm, fit_categories: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
                                             placeholder="high, medium"
-                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-violet-500/40"
+                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-cyan-500/40"
                                         />
                                     </div>
                                     <div>
@@ -609,7 +653,7 @@ function PlayCard({
                                             value={triggerForm.min_score || ''}
                                             onChange={e => setTriggerForm({ ...triggerForm, min_score: parseInt(e.target.value) || 0 })}
                                             placeholder="60"
-                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-violet-500/40"
+                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-cyan-500/40"
                                         />
                                     </div>
                                     <div>
@@ -618,7 +662,7 @@ function PlayCard({
                                             value={(triggerForm.signal_types || []).join(', ')}
                                             onChange={e => setTriggerForm({ ...triggerForm, signal_types: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })}
                                             placeholder="hiring_sdr, hiring_ae"
-                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-violet-500/40"
+                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-cyan-500/40"
                                         />
                                     </div>
                                     <div>
@@ -628,19 +672,19 @@ function PlayCard({
                                             value={triggerForm.min_signals || ''}
                                             onChange={e => setTriggerForm({ ...triggerForm, min_signals: parseInt(e.target.value) || 0 })}
                                             placeholder="1"
-                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-violet-500/40"
+                                            className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-cyan-500/40"
                                         />
                                     </div>
                                 </div>
                                 <div className="flex gap-2">
-                                    <button onClick={onSaveTriggers} className="px-3 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-semibold">Save</button>
+                                    <button onClick={onSaveTriggers} className="px-3 py-1.5 bg-cyan-600 text-white rounded-lg text-xs font-semibold">Save</button>
                                     <button onClick={onCancelTriggers} className="px-3 py-1.5 bg-slate-800 text-slate-400 rounded-lg text-xs font-semibold">Cancel</button>
                                 </div>
                             </div>
                         ) : hasTriggers ? (
                             <div className="flex flex-wrap gap-2">
                                 {rules.fit_categories?.length > 0 && (
-                                    <span className="px-2.5 py-1 bg-violet-500/10 text-violet-400 rounded-lg text-[11px] font-medium">
+                                    <span className="px-2.5 py-1 bg-cyan-500/10 text-cyan-400 rounded-lg text-[11px] font-medium">
                                         Fit: {rules.fit_categories.join(', ')}
                                     </span>
                                 )}
@@ -780,30 +824,42 @@ function PlayCard({
 
 // ─── Step Config Display ─────────────────────────────────────
 
-function StepConfigDisplay({ type, config }: { type: string; config: Record<string, any> }) {
+function StepConfigDisplay({ type, config }: { type: string; config: StepConfig }) {
+    const formatValue = (value: StepConfigValue, fallback: string) => {
+        if (value == null || value === '') return fallback;
+        if (Array.isArray(value)) return value.join(', ');
+        return String(value);
+    };
+
     if (type === 'email') {
         return (
             <div className="space-y-1">
-                <p className="text-xs text-white font-medium">Subject: <span className="text-slate-300 font-normal">{config.subject || '(empty)'}</span></p>
-                <p className="text-xs text-slate-400 line-clamp-2 whitespace-pre-wrap">{config.body || '(empty body)'}</p>
+                <p className="text-xs text-white font-medium">Subject: <span className="text-slate-300 font-normal">{formatValue(config.subject, '(empty)')}</span></p>
+                <p className="text-xs text-slate-400 line-clamp-2 whitespace-pre-wrap">{formatValue(config.body, '(empty body)')}</p>
             </div>
         );
     }
     if (type === 'wait') {
-        return <p className="text-xs text-amber-300">Wait {config.days || 0} day{(config.days || 0) !== 1 ? 's' : ''}</p>;
+        const daysValue = typeof config.days === 'number' ? config.days : Number(config.days || 0);
+        const days = Number.isFinite(daysValue) ? daysValue : 0;
+        return <p className="text-xs text-amber-300">Wait {days} day{days !== 1 ? 's' : ''}</p>;
     }
     if (type === 'task') {
         return (
             <div>
-                <p className="text-xs text-white font-medium">{config.title || '(untitled)'}</p>
-                {config.description && <p className="text-xs text-slate-400 mt-0.5">{config.description}</p>}
+                <p className="text-xs text-white font-medium">{formatValue(config.title, '(untitled)')}</p>
+                {config.description && <p className="text-xs text-slate-400 mt-0.5">{formatValue(config.description, '')}</p>}
             </div>
         );
     }
     if (type === 'condition') {
+        const yesValue = typeof config.yes_step === 'number' ? config.yes_step : Number(config.yes_step || 0);
+        const noValue = typeof config.no_step === 'number' ? config.no_step : Number(config.no_step || 0);
+        const yesStep = Number.isFinite(yesValue) ? yesValue : '?';
+        const noStep = Number.isFinite(noValue) ? noValue : '?';
         return (
-            <p className="text-xs text-purple-300">
-                If <span className="font-mono text-purple-400">{config.check || '?'}</span> → step {config.yes_step || '?'}, else → step {config.no_step || '?'}
+            <p className="text-xs text-sky-300">
+                If <span className="font-mono text-sky-400">{formatValue(config.check, '?')}</span> → step {yesStep}, else → step {noStep}
             </p>
         );
     }
@@ -813,7 +869,7 @@ function StepConfigDisplay({ type, config }: { type: string; config: Record<stri
 
 // ─── Step Config Form ────────────────────────────────────────
 
-function StepConfigForm({ type, config, setConfig }: { type: string; config: Record<string, any>; setConfig: (v: Record<string, any>) => void }) {
+function StepConfigForm({ type, config, setConfig }: { type: string; config: StepConfig; setConfig: (v: StepConfig) => void }) {
     if (type === 'email') {
         return (
             <div className="space-y-2">
@@ -829,7 +885,7 @@ function StepConfigForm({ type, config, setConfig }: { type: string; config: Rec
     }
     if (type === 'wait') {
         return (
-            <input type="number" value={config.days || ''} onChange={e => setConfig({ ...config, days: e.target.value })}
+            <input type="number" value={config.days || ''} onChange={e => setConfig({ ...config, days: Number(e.target.value) || 0 })}
                 placeholder="Days to wait"
                 className="w-48 bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-amber-500/40" />
         );
@@ -861,12 +917,12 @@ function StepConfigForm({ type, config, setConfig }: { type: string; config: Rec
                 </div>
                 <div>
                     <label className="block text-[10px] text-slate-500 mb-1">If Yes → Step</label>
-                    <input type="number" value={config.yes_step || ''} onChange={e => setConfig({ ...config, yes_step: e.target.value })}
+                    <input type="number" value={config.yes_step || ''} onChange={e => setConfig({ ...config, yes_step: Number(e.target.value) || 0 })}
                         className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none" />
                 </div>
                 <div>
                     <label className="block text-[10px] text-slate-500 mb-1">If No → Step</label>
-                    <input type="number" value={config.no_step || ''} onChange={e => setConfig({ ...config, no_step: e.target.value })}
+                    <input type="number" value={config.no_step || ''} onChange={e => setConfig({ ...config, no_step: Number(e.target.value) || 0 })}
                         className="w-full bg-[#131A2E] border border-slate-800/60 rounded-lg px-3 py-2 text-white text-xs outline-none" />
                 </div>
             </div>
