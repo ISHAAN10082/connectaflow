@@ -2,6 +2,7 @@
 Playbooks & Plays API — persona-driven engagement sequences.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlmodel import Session, select
 from api.deps import get_workspace_id
 from database import get_session
@@ -13,9 +14,85 @@ from models import (
 )
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 router = APIRouter(prefix="/playbooks", tags=["playbooks"])
+
+
+class EnrollmentUpdateRequest(BaseModel):
+    action: Optional[str] = None
+    status: Optional[str] = None
+    current_step: Optional[int] = None
+    outcome: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _describe_step(step: PlayStep | None) -> Optional[Dict[str, Any]]:
+    if not step:
+        return None
+
+    config = step.config or {}
+    label = step.step_type.replace("_", " ").title()
+    if step.step_type == "email":
+        description = str(config.get("subject") or "Personalized outreach email")
+    elif step.step_type == "wait":
+        days = config.get("days", 0)
+        description = f"Wait {days} day{'s' if days != 1 else ''}"
+    elif step.step_type == "task":
+        description = str(config.get("title") or config.get("description") or "Manual follow-up task")
+    elif step.step_type == "condition":
+        description = str(config.get("check") or "Condition branch")
+    else:
+        description = label
+
+    return {
+        "step_number": step.step_number,
+        "step_type": step.step_type,
+        "label": label,
+        "description": description,
+    }
+
+
+def _serialize_enrollment(
+    enrollment: PlayEnrollment,
+    lead_info: Optional[Dict[str, Any]],
+    step_lookup: Dict[int, PlayStep],
+) -> Dict[str, Any]:
+    history = list(enrollment.step_history or [])
+    return {
+        **enrollment.model_dump(),
+        "id": str(enrollment.id),
+        "play_id": str(enrollment.play_id),
+        "lead_id": str(enrollment.lead_id) if enrollment.lead_id else None,
+        "current_step_detail": _describe_step(step_lookup.get(enrollment.current_step)),
+        "next_step_detail": _describe_step(step_lookup.get(enrollment.current_step + 1)),
+        "step_history": history,
+        "step_history_count": len(history),
+        "lead": lead_info,
+    }
+
+
+def _record_enrollment_event(
+    enrollment: PlayEnrollment,
+    action: str,
+    *,
+    status: str,
+    step: int,
+    outcome: Optional[str] = None,
+    notes: Optional[str] = None,
+    timestamp: Optional[datetime] = None,
+) -> None:
+    event_time = timestamp or datetime.utcnow()
+    history = list(enrollment.step_history or [])
+    history.append({
+        "timestamp": event_time.isoformat(),
+        "action": action,
+        "status": status,
+        "step": step,
+        "outcome": outcome,
+        "notes": notes,
+    })
+    enrollment.step_history = history[-50:]
 
 
 # ─── Playbook CRUD ────────────────────────────────────────────
@@ -103,17 +180,21 @@ def get_playbook(
             .where(PlayEnrollment.play_id == p.id)
             .where(PlayEnrollment.workspace_id == workspace_id)
         ).all()
+        step_lookup = {step.step_number: step for step in steps}
+        serialized_enrollments = []
+        for e in enrollments:
+            lead_info = None
+            if e.lead_id:
+                lead = session.get(Lead, e.lead_id)
+                if lead:
+                    lead_info = {"email": lead.email, "first_name": lead.first_name, "domain": lead.domain}
+            serialized_enrollments.append(_serialize_enrollment(e, lead_info, step_lookup))
         plays.append({
             **p.model_dump(),
             "id": str(p.id),
             "playbook_id": str(p.playbook_id),
             "steps": [{**s.model_dump(), "id": str(s.id), "play_id": str(s.play_id)} for s in steps],
-            "enrollments": [{
-                **e.model_dump(),
-                "id": str(e.id),
-                "play_id": str(e.play_id),
-                "lead_id": str(e.lead_id) if e.lead_id else None,
-            } for e in enrollments],
+            "enrollments": serialized_enrollments,
             "enrollment_count": len(enrollments),
         })
 
@@ -322,6 +403,7 @@ def enroll_leads(
         raise HTTPException(404, "Play not found")
 
     enrolled = []
+    event_time = datetime.utcnow()
     for lid in data.lead_ids:
         lead_uuid = uuid.UUID(lid)
         # Skip if already enrolled in this play
@@ -340,7 +422,9 @@ def enroll_leads(
             play_id=play_id,
             lead_id=lead_uuid,
             domain=lead.domain if lead else None,
+            last_step_at=event_time,
         )
+        _record_enrollment_event(enrollment, "enrolled", status="active", step=1, outcome="manual", timestamp=event_time)
         session.add(enrollment)
         enrolled.append(str(enrollment.id))
 
@@ -359,7 +443,9 @@ def enroll_leads(
             workspace_id=workspace_id,
             play_id=play_id,
             domain=domain,
+            last_step_at=event_time,
         )
+        _record_enrollment_event(enrollment, "enrolled", status="active", step=1, outcome="manual", timestamp=event_time)
         session.add(enrollment)
         enrolled.append(str(enrollment.id))
 
@@ -373,6 +459,13 @@ def get_enrollments(
     session: Session = Depends(get_session),
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
+    steps = session.exec(
+        select(PlayStep)
+        .where(PlayStep.play_id == play_id)
+        .where(PlayStep.workspace_id == workspace_id)
+        .order_by(PlayStep.step_number)
+    ).all()
+    step_lookup = {step.step_number: step for step in steps}
     enrollments = session.exec(
         select(PlayEnrollment)
         .where(PlayEnrollment.play_id == play_id)
@@ -385,35 +478,88 @@ def get_enrollments(
             lead = session.get(Lead, e.lead_id)
             if lead:
                 lead_info = {"email": lead.email, "first_name": lead.first_name, "domain": lead.domain}
-        result.append({
-            **e.model_dump(),
-            "id": str(e.id),
-            "play_id": str(e.play_id),
-            "lead_id": str(e.lead_id) if e.lead_id else None,
-            "lead": lead_info,
-        })
+        result.append(_serialize_enrollment(e, lead_info, step_lookup))
     return {"enrollments": result}
 
 
 @router.patch("/enrollments/{enrollment_id}")
 def update_enrollment(
     enrollment_id: uuid.UUID,
-    status: str,
-    current_step: Optional[int] = None,
+    payload: EnrollmentUpdateRequest,
     session: Session = Depends(get_session),
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     enrollment = session.get(PlayEnrollment, enrollment_id)
     if not enrollment or enrollment.workspace_id != workspace_id:
         raise HTTPException(404, "Enrollment not found")
-    enrollment.status = status
-    if current_step is not None:
-        enrollment.current_step = current_step
-    enrollment.last_step_at = datetime.utcnow()
+
+    play = session.get(Play, enrollment.play_id)
+    if not play or play.workspace_id != workspace_id:
+        raise HTTPException(404, "Play not found")
+
+    steps = session.exec(
+        select(PlayStep)
+        .where(PlayStep.play_id == play.id)
+        .where(PlayStep.workspace_id == workspace_id)
+        .order_by(PlayStep.step_number)
+    ).all()
+    step_lookup = {step.step_number: step for step in steps}
+    step_numbers = sorted(step_lookup)
+    min_step = step_numbers[0] if step_numbers else 1
+    max_step = step_numbers[-1] if step_numbers else enrollment.current_step
+
+    action = payload.action or "update"
+    valid_actions = {"pause", "resume", "advance", "complete", "exit", "update"}
+    if action not in valid_actions:
+        raise HTTPException(400, "Unsupported enrollment action")
+
+    next_status = payload.status or enrollment.status
+    next_step = payload.current_step if payload.current_step is not None else enrollment.current_step
+
+    if step_numbers:
+        next_step = max(min_step, min(next_step, max_step))
+
+    if action == "pause":
+        next_status = "paused"
+    elif action == "resume":
+        next_status = "active"
+    elif action == "advance":
+        if step_numbers and next_step >= max_step:
+            next_status = "completed"
+            next_step = max_step
+        else:
+            next_step += 1
+            next_status = "active"
+    elif action == "complete":
+        next_status = "completed"
+        if step_numbers:
+            next_step = max_step
+    elif action == "exit":
+        next_status = "exited"
+
+    now = datetime.utcnow()
+    enrollment.status = next_status
+    enrollment.current_step = next_step
+    enrollment.last_step_at = now
+    _record_enrollment_event(
+        enrollment,
+        action,
+        status=next_status,
+        step=next_step,
+        outcome=payload.outcome,
+        notes=payload.notes,
+        timestamp=now,
+    )
     session.add(enrollment)
     session.commit()
     session.refresh(enrollment)
-    return {**enrollment.model_dump(), "id": str(enrollment.id), "play_id": str(enrollment.play_id), "lead_id": str(enrollment.lead_id) if enrollment.lead_id else None}
+
+    lead_info = None
+    if enrollment.lead_id:
+        lead = session.get(Lead, enrollment.lead_id)
+        if lead:
+            lead_info = {"email": lead.email, "first_name": lead.first_name, "domain": lead.domain}
+    return _serialize_enrollment(enrollment, lead_info, step_lookup)
 
 
 # ─── Auto-Enroll (match leads against play trigger rules) ────
@@ -501,6 +647,7 @@ def auto_enroll(
 
         # Enroll matched leads (skip duplicates)
         play_enrolled = 0
+        event_time = datetime.utcnow()
         for lead in matched_leads:
             existing = session.exec(
                 select(PlayEnrollment).where(
@@ -516,7 +663,9 @@ def auto_enroll(
                 play_id=play.id,
                 lead_id=lead.id,
                 domain=lead.domain,
+                last_step_at=event_time,
             )
+            _record_enrollment_event(enrollment, "enrolled", status="active", step=1, outcome="auto", timestamp=event_time)
             session.add(enrollment)
             play_enrolled += 1
 

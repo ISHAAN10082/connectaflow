@@ -45,6 +45,18 @@ PRIORITY_PATHS = {
 _cached_indices: Optional[list[str]] = None
 
 
+def _build_cc_client() -> httpx.AsyncClient:
+    """
+    Prefer HTTP/2 for Common Crawl range requests, but degrade cleanly when
+    the optional h2 dependency is not installed in local/dev environments.
+    """
+    try:
+        return httpx.AsyncClient(http2=True)
+    except ImportError:
+        logger.warning("Common Crawl HTTP/2 support unavailable; falling back to HTTP/1.1 because 'h2' is not installed.")
+        return httpx.AsyncClient()
+
+
 async def get_recent_cc_indices(client: httpx.AsyncClient) -> list[str]:
     """Discover current CC indices from the official collinfo endpoint."""
     global _cached_indices
@@ -198,7 +210,7 @@ async def cc_batch_lookup(domains: list[str], concurrency: int = 10) -> dict[str
     results: dict[str, dict[str, str]] = {}
     semaphore = asyncio.Semaphore(concurrency)
 
-    async with httpx.AsyncClient(http2=True) as client:
+    async with _build_cc_client() as client:
         async def _lookup(domain: str):
             async with semaphore:
                 pages = await get_cc_pages(domain, client)

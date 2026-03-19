@@ -104,7 +104,7 @@ async def fetch_domain(domain: str, semaphore: asyncio.Semaphore, idx: int = 0) 
     base_url = f"https://{domain}"
 
     async with semaphore:
-        async with httpx.AsyncClient(verify=False) as client:
+        async with httpx.AsyncClient() as client:
             # Fire all page fetches + DNS concurrently
             tasks = [fetch_single_url(client, base_url, path, idx) for path in PATHS_TO_FETCH]
             tasks.append(fetch_dns_mx(domain))

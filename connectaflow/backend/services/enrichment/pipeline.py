@@ -57,6 +57,7 @@ async def enrich_single(
             pages_html[path] = html
         fetch_meta["source"] = "commoncrawl"
         fetch_meta["pages_found"] = len(cc_pages)
+        fetch_meta["page_statuses"] = {path or "/": 200 for path in cc_pages.keys()}
     else:
         # Live fetch via httpx
         sem = semaphore or asyncio.Semaphore(30)
@@ -64,6 +65,7 @@ async def enrich_single(
         sources_used.append("httpx")
         fetch_meta["source"] = "httpx"
         fetch_meta["pages_found"] = sum(1 for p in fetch_result.pages.values() if p.html)
+        fetch_meta["page_statuses"] = {path or "/": page.status for path, page in fetch_result.pages.items()}
 
         for path, page in fetch_result.pages.items():
             if page.html:
@@ -184,7 +186,7 @@ async def enrich_batch(
         nonlocal completed
         try:
             cc_pages = cc_results.get(domain)
-            profile = await enrich_single(domain, cc_pages=cc_pages, semaphore=semaphore)
+            profile, pages_html = await enrich_single(domain, cc_pages=cc_pages, semaphore=semaphore)
             completed += 1
             if on_progress:
                 await on_progress({
@@ -196,7 +198,7 @@ async def enrich_batch(
                     "completed": completed,
                     "total": total,
                 })
-            return profile
+            return profile, pages_html
         except Exception as e:
             completed += 1
             logger.error(f"Enrichment failed for {domain}: {e}")

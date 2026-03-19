@@ -6,7 +6,7 @@ import {
     CheckCircle2, RefreshCw, Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getProfiles, getSignalQueue, getHealth, type CompanyProfile, type SignalQueueItem, type HealthStatus } from '../services/api';
+import { listAllProfiles, getSignalQueue, getHealth, type CompanyProfile, type SignalQueueItem, type HealthStatus } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 
 interface KPI {
@@ -28,12 +28,12 @@ export const KPIDashboard = () => {
         setLoading(true);
         try {
             const [profilesResp, signalsResp, healthResp] = await Promise.all([
-                getProfiles(0, 1000).catch(() => ({ data: { profiles: [], total: 0 } })),
+                listAllProfiles().catch(() => ({ profiles: [], total: 0 })),
                 getSignalQueue(undefined, 200).catch(() => ({ data: { queue: [], total: 0 } })),
                 getHealth().catch(() => ({ data: { status: 'unknown', providers: {} } })),
             ]);
 
-            const profiles: CompanyProfile[] = profilesResp.data.profiles || [];
+            const profiles: CompanyProfile[] = profilesResp.profiles || [];
             const signals: SignalQueueItem[] = signalsResp.data.queue || [];
             const health = healthResp.data as HealthStatus;
 

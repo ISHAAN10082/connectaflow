@@ -1,10 +1,36 @@
 import axios from 'axios';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+const WORKSPACE_STORAGE_KEY = 'connectaflow.workspaceId';
 
 const api = axios.create({
     baseURL: API_BASE,
     timeout: 30000,
+});
+
+const readActiveWorkspaceId = () => {
+    if (typeof window === 'undefined') return null;
+    return window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+};
+
+export const getActiveWorkspaceId = () => readActiveWorkspaceId();
+
+export const setActiveWorkspaceId = (workspaceId: string | null) => {
+    if (typeof window === 'undefined') return;
+    if (!workspaceId) {
+        window.localStorage.removeItem(WORKSPACE_STORAGE_KEY);
+        return;
+    }
+    window.localStorage.setItem(WORKSPACE_STORAGE_KEY, workspaceId);
+};
+
+api.interceptors.request.use((config) => {
+    const workspaceId = readActiveWorkspaceId();
+    if (workspaceId) {
+        config.headers = config.headers ?? {};
+        config.headers['X-Workspace-Id'] = workspaceId;
+    }
+    return config;
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -30,6 +56,11 @@ export interface CompanyProfile {
     quality_tier: string;
     sources_used: string[];
     enriched_at: string | null;
+    fetch_metadata?: JsonRecord;
+}
+
+export interface LeadCompanyProfile extends Partial<CompanyProfile> {
+    fetch_metadata?: JsonRecord;
 }
 
 export interface Lead {
@@ -44,7 +75,7 @@ export interface Lead {
     custom_data: JsonRecord;
     created_at: string;
     updated_at: string;
-    company_profile?: Partial<CompanyProfile>;
+    company_profile?: LeadCompanyProfile;
 }
 
 export interface ICPDefinition {
@@ -96,13 +127,19 @@ export interface SignalQueueItem {
     composite_score: number;
     icp_score: number;
     quality_score: number;
+    signal_score: number;
     signals: SignalDetail[];
     signal_count: number;
+    priority_band: 'act_now' | 'work_soon' | 'review_first';
+    recommended_action: string;
+    ranking_reason: string;
 }
 
 export interface SignalDetail {
     type: string;
+    label: string;
     strength: number;
+    effective_strength: number;
     recency_decay: number;
     evidence: string;
     source_url: string;
@@ -110,14 +147,22 @@ export interface SignalDetail {
     age_days: number;
 }
 
+export interface SignalQueueSummary {
+    act_now: number;
+    work_soon: number;
+    review_first: number;
+}
+
 export interface EnrichmentJobStatus {
     job_id: string;
     status: string;
+    phase?: string | null;
     total: number;
     completed: number;
     failed: number;
     progress_pct: number;
     results: EnrichmentResult[];
+    error?: string | null;
 }
 
 export interface EnrichmentResult {
@@ -127,6 +172,38 @@ export interface EnrichmentResult {
     sources: string[];
 }
 
+export interface ImportLeadsResult {
+    job_id: string | null;
+    domains_imported: number;
+    leads_imported: number;
+    leads_updated: number;
+    rows_processed: number;
+    rows_skipped: number;
+    domains_truncated?: number;
+    status: string;
+}
+
+export interface LeadListParams {
+    skip?: number;
+    limit?: number;
+    status?: string;
+    q?: string;
+    enriched_only?: boolean;
+}
+
+export interface ProfileFieldPatch {
+    field_name: string;
+    value: DataValue;
+    confidence?: number;
+    evidence?: string;
+    source?: string;
+}
+
+export interface ProfileUpdateRequest {
+    name?: string | null;
+    fields: ProfileFieldPatch[];
+}
+
 export interface HealthStatus {
     status: string;
     version?: string;
@@ -134,6 +211,12 @@ export interface HealthStatus {
         groq?: boolean;
         gemini?: boolean;
     };
+}
+
+export interface WorkspaceData {
+    id: string;
+    name: string;
+    settings?: JsonRecord;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -360,12 +443,30 @@ export const generateSourcingGuide = (ctxId: string) =>
 // Health
 export const getHealth = () => api.get<HealthStatus>('/health');
 
+// Workspaces
+export const listWorkspaces = () =>
+    api.get<{ workspaces: WorkspaceData[] }>('/workspaces/');
+
+export const createWorkspace = (data: { name: string }) =>
+    api.post<WorkspaceData>('/workspaces/', data);
+
 // Leads
-export const getLeads = (skip = 0, limit = 50) =>
-    api.get<{ leads: Lead[]; total: number }>(`/leads/?skip=${skip}&limit=${limit}`);
+export const getLeads = ({ skip = 0, limit = 50, status, q, enriched_only }: LeadListParams = {}) => {
+    const params = new URLSearchParams({
+        skip: String(skip),
+        limit: String(limit),
+    });
+    if (status) params.set('status', status);
+    if (q) params.set('q', q);
+    if (enriched_only) params.set('enriched_only', 'true');
+    return api.get<{ leads: Lead[]; total: number }>(`/leads/?${params.toString()}`);
+};
 
 export const createLead = (data: { email: string; first_name?: string; last_name?: string; domain?: string }) =>
     api.post<Lead>('/leads/', data);
+
+export const getLead = (id: string) =>
+    api.get<Lead>(`/leads/${id}`);
 
 export const updateLead = (id: string, data: Partial<Lead>) =>
     api.patch<Lead>(`/leads/${id}`, data);
@@ -383,17 +484,39 @@ export const getJobStatus = (jobId: string) =>
 export const importCSV = (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
-    return api.post<{ job_id: string; domains_imported: number }>('/enrichment/import-csv', formData);
+    return api.post<ImportLeadsResult>('/enrichment/import-csv', formData);
 };
 
-export const getProfiles = (skip = 0, limit = 50, qualityTier?: string) => {
+export const getProfiles = (skip = 0, limit = 50, qualityTier?: string, q?: string) => {
     let url = `/enrichment/profiles?skip=${skip}&limit=${limit}`;
     if (qualityTier) url += `&quality_tier=${qualityTier}`;
+    if (q) url += `&q=${encodeURIComponent(q)}`;
     return api.get<{ profiles: CompanyProfile[]; total: number }>(url);
 };
 
 export const getProfile = (domain: string) =>
     api.get<CompanyProfile>(`/enrichment/profiles/${domain}`);
+
+export const updateProfile = (domain: string, data: ProfileUpdateRequest) =>
+    api.patch<CompanyProfile>(`/enrichment/profiles/${domain}`, data);
+
+export const listAllProfiles = async (qualityTier?: string) => {
+    const pageSize = 200;
+    let skip = 0;
+    let total = 0;
+    const profiles: CompanyProfile[] = [];
+
+    while (skip === 0 || profiles.length < total) {
+        const { data } = await getProfiles(skip, pageSize, qualityTier);
+        const page = data.profiles || [];
+        total = data.total || profiles.length;
+        profiles.push(...page);
+        if (page.length === 0) break;
+        skip += page.length;
+    }
+
+    return { profiles, total };
+};
 
 // ICP
 export const generateICPSync = (data: { name: string; product_description: string; customer_examples: string[] }) =>
@@ -412,10 +535,11 @@ export const scoreBatch = (icp_id: string, domains: string[] = []) =>
     api.post<{ scores: ICPScoreResult[]; total: number; icp_name: string }>('/icp/score', { icp_id, domains });
 
 // Signals
-export const getSignalQueue = (icp_id?: string, limit = 50) => {
-    let url = `/signals/queue?limit=${limit}`;
+export const getSignalQueue = (icp_id?: string, limit = 50, skip = 0, q?: string) => {
+    let url = `/signals/queue?limit=${limit}&skip=${skip}`;
     if (icp_id) url += `&icp_id=${icp_id}`;
-    return api.get<{ queue: SignalQueueItem[]; total: number }>(url);
+    if (q) url += `&q=${encodeURIComponent(q)}`;
+    return api.get<{ queue: SignalQueueItem[]; total: number; summary: SignalQueueSummary }>(url);
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -442,6 +566,22 @@ export interface PlayStepData {
     config: Record<string, unknown>;
 }
 
+export interface PlayStepSummary {
+    step_number: number;
+    step_type: string;
+    label: string;
+    description: string;
+}
+
+export interface StepHistoryEntry {
+    timestamp: string;
+    action: string;
+    status: string;
+    step: number;
+    outcome?: string | null;
+    notes?: string | null;
+}
+
 export interface PlayEnrollmentData {
     id: string;
     play_id: string;
@@ -451,6 +591,10 @@ export interface PlayEnrollmentData {
     status: string;
     enrolled_at: string;
     last_step_at: string | null;
+    current_step_detail?: PlayStepSummary | null;
+    next_step_detail?: PlayStepSummary | null;
+    step_history?: StepHistoryEntry[];
+    step_history_count?: number;
     lead?: { email: string; first_name: string | null; domain: string | null };
 }
 
@@ -527,6 +671,14 @@ export const enrollInPlay = (playId: string, data: { lead_ids?: string[]; domain
 export const getPlayEnrollments = (playId: string) =>
     api.get<{ enrollments: PlayEnrollmentData[] }>(`/playbooks/plays/${playId}/enrollments`);
 
+export const updateEnrollmentProgress = (enrollmentId: string, data: {
+    action?: 'pause' | 'resume' | 'advance' | 'complete' | 'exit';
+    status?: string;
+    current_step?: number;
+    outcome?: string;
+    notes?: string;
+}) => api.patch<PlayEnrollmentData>(`/playbooks/enrollments/${enrollmentId}`, data);
+
 export const autoEnrollPlaybook = (playbookId: string) =>
     api.post<{ enrolled_total: number; by_play: Record<string, { name: string; enrolled: number }> }>(`/playbooks/${playbookId}/auto-enroll`);
 
@@ -543,8 +695,7 @@ export const createSSEStream = (path: string): EventSource => {
 
 // Export CSV
 export const exportEnrichedCSV = async () => {
-    const { data } = await getProfiles(0, 1000);
-    const profiles = data.profiles;
+    const { profiles } = await listAllProfiles();
 
     const formatValue = (value: DataValue | undefined) => {
         if (value == null) return '';

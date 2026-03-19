@@ -142,7 +142,14 @@ async def score_batch(
 
     # Get domains to score
     if req.domains:
-        profiles = [session.get(CompanyProfile, d) for d in req.domains]
+        profiles = [
+            session.exec(
+                select(CompanyProfile)
+                .where(CompanyProfile.domain == domain)
+                .where(CompanyProfile.workspace_id == workspace_id)
+            ).first()
+            for domain in req.domains
+        ]
         profiles = [p for p in profiles if p]
     else:
         profiles = session.exec(select(CompanyProfile).where(CompanyProfile.workspace_id == workspace_id)).all()

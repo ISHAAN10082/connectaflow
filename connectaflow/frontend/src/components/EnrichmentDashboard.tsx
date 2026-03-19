@@ -1,13 +1,16 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Sparkles, Upload, Loader2, ChevronDown, ChevronRight, Database } from 'lucide-react';
+import { Sparkles, Upload, Loader2, ChevronDown, ChevronRight, Database, Search, ChevronLeft, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
-import { importCSV, startBatchEnrichment, getJobStatus, getProfiles, scoreBatch, type CompanyProfile, type EnrichmentJobStatus, type DataPoint, type ICPScoreResult, type DataValue } from '../services/api';
+import { importCSV, startBatchEnrichment, getJobStatus, getProfiles, scoreBatch, type CompanyProfile, type EnrichmentJobStatus, type DataPoint, type ICPScoreResult, type ImportLeadsResult } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
+import { isHttpUrl } from '../lib/links';
+import { describeEvidence, formatDataValue, formatSourceLabel } from '../lib/provenance';
 
 interface Props {
     icpId: string | null;
+    initialDomains?: string | null;
 }
 
 const QUALITY_COLORS: Record<string, string> = {
@@ -26,32 +29,72 @@ const FIT_COLORS: Record<string, { bg: string; text: string }> = {
     unscored: { bg: 'bg-slate-500/10', text: 'text-slate-500' },
 };
 
-export function EnrichmentDashboard({ icpId }: Props) {
+const PHASE_LABELS: Record<string, string> = {
+    queued: 'Queued',
+    loading_cache: 'Checking cached company profiles',
+    commoncrawl_lookup: 'Searching Common Crawl and public archives',
+    cc_complete: 'Common Crawl lookup complete, preparing live fetch',
+    completed: 'Completed',
+};
+
+const FIELD_PRIORITIES: Record<string, number> = {
+    company_name: 1,
+    company_description: 2,
+    industry: 3,
+    business_model: 4,
+    hq_location: 5,
+    employee_count: 6,
+    company_phone: 7,
+    linkedin_url: 8,
+    pricing_model: 9,
+    funding_stage: 10,
+    tech_stack: 11,
+};
+
+export function EnrichmentDashboard({ icpId, initialDomains }: Props) {
     const [domains, setDomains] = useState('');
     const [jobStatus, setJobStatus] = useState<EnrichmentJobStatus | null>(null);
     const [profiles, setProfiles] = useState<CompanyProfile[]>([]);
+    const [totalProfiles, setTotalProfiles] = useState(0);
+    const [profileQuery, setProfileQuery] = useState('');
+    const [profilePage, setProfilePage] = useState(0);
     const [scores, setScores] = useState<Record<string, ICPScoreResult>>({});
     const [expandedDomain, setExpandedDomain] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+    const [lastImport, setLastImport] = useState<ImportLeadsResult | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-    useEffect(() => { loadProfiles(); }, [loadProfiles]);
-    useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
+    const pageSize = 50;
 
     const loadProfiles = useCallback(async () => {
         try {
-            const { data } = await getProfiles(0, 100);
+            const { data } = await getProfiles(profilePage * pageSize, pageSize, undefined, profileQuery || undefined);
             setProfiles(data.profiles || []);
+            setTotalProfiles(data.total || 0);
         } catch { }
-    }, []);
+    }, [profilePage, profileQuery]);
 
-    const formatDataValue = (value: DataValue | undefined) => {
-        if (value == null) return '';
-        if (Array.isArray(value)) return value.join(', ');
-        if (typeof value === 'object') return JSON.stringify(value);
-        return String(value);
-    };
+    useEffect(() => { loadProfiles(); }, [loadProfiles]);
+    useEffect(() => { return () => { if (pollRef.current) clearInterval(pollRef.current); }; }, []);
+    useEffect(() => {
+        if (initialDomains) setDomains(initialDomains);
+    }, [initialDomains]);
+
+    useEffect(() => {
+        setProfilePage(0);
+    }, [profileQuery]);
+
+    const formatFieldLabel = (field: string) => field
+        .replace(/^hq_/, 'HQ ')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+
+    const phaseLabel = jobStatus?.phase
+        ? (PHASE_LABELS[jobStatus.phase] || jobStatus.phase.replace(/_/g, ' '))
+        : null;
+
+    const totalProfilePages = Math.max(1, Math.ceil(totalProfiles / pageSize));
 
     const startPolling = useCallback((jId: string) => {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -75,7 +118,7 @@ export function EnrichmentDashboard({ icpId }: Props) {
                             } catch { }
                         }
                     } else {
-                        toast.error('Enrichment failed');
+                        toast.error(data.error || 'Enrichment failed');
                     }
                 }
             } catch { }
@@ -94,7 +137,7 @@ export function EnrichmentDashboard({ icpId }: Props) {
         setLoading(true);
         try {
             const { data } = await startBatchEnrichment(domainList, icpId || undefined);
-            setJobStatus({ job_id: data.job_id, status: 'queued', total: data.total, completed: 0, failed: 0, progress_pct: 0, results: [] });
+            setJobStatus({ job_id: data.job_id, status: 'queued', phase: 'queued', total: data.total, completed: 0, failed: 0, progress_pct: 0, results: [], error: null });
             startPolling(data.job_id);
             toast.success(`Enriching ${data.total} companies...`);
         } catch (err: unknown) {
@@ -110,11 +153,23 @@ export function EnrichmentDashboard({ icpId }: Props) {
         setLoading(true);
         try {
             const { data } = await importCSV(file);
-            setJobStatus({ job_id: data.job_id, status: 'queued', total: data.domains_imported, completed: 0, failed: 0, progress_pct: 0, results: [] });
-            startPolling(data.job_id);
-            toast.success(`Imported ${data.domains_imported} domains — enriching...`);
+            setLastImport(data);
+            if (data.job_id) {
+                setJobStatus({ job_id: data.job_id, status: 'queued', phase: 'queued', total: data.domains_imported, completed: 0, failed: 0, progress_pct: 0, results: [], error: null });
+                startPolling(data.job_id);
+                toast.success(`Imported ${data.leads_imported + data.leads_updated} leads and queued ${data.domains_imported} domains for enrichment`);
+            } else {
+                setJobStatus(null);
+                toast.success(`Imported ${data.leads_imported + data.leads_updated} leads`);
+                if (data.rows_skipped > 0) {
+                    toast.info(`${data.rows_skipped} rows were skipped because they had no usable email or domain`);
+                }
+            }
+            if (data.domains_truncated) {
+                toast.info(`Only the first 500 unique domains were queued for enrichment`);
+            }
         } catch (err: unknown) {
-            toast.error(getErrorMessage(err, 'CSV import failed'));
+            toast.error(getErrorMessage(err, 'File import failed'));
         } finally {
             setLoading(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
@@ -137,6 +192,21 @@ export function EnrichmentDashboard({ icpId }: Props) {
 
                 {/* Input area */}
                 <div className="bg-[#131A2E] border border-slate-800/60 rounded-2xl p-6 mb-6">
+                    <div className="grid md:grid-cols-3 gap-3 mb-4">
+                        <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                            <p className="text-xs uppercase tracking-wider text-cyan-300 font-semibold">Test Path A</p>
+                            <p className="text-xs text-slate-300 mt-1 leading-5">Paste a few real public company domains and confirm profiles, evidence, and quality scores appear.</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                            <p className="text-xs uppercase tracking-wider text-emerald-300 font-semibold">Test Path B</p>
+                            <p className="text-xs text-slate-300 mt-1 leading-5">Upload a lead spreadsheet with work emails. We create leads first, then enrich any business domains we can infer.</p>
+                        </div>
+                        <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
+                            <p className="text-xs uppercase tracking-wider text-amber-300 font-semibold">What To Expect</p>
+                            <p className="text-xs text-slate-300 mt-1 leading-5">Not every row becomes enrichable. Freemail rows should still import as leads, but only company domains get queued.</p>
+                        </div>
+                    </div>
+
                     <div className="flex gap-4 mb-4">
                         <textarea
                             value={domains}
@@ -160,11 +230,31 @@ export function EnrichmentDashboard({ icpId }: Props) {
                             disabled={loading}
                             className="px-5 py-2.5 bg-[#0A0F1E] border border-slate-700/60 hover:border-slate-600 text-slate-300 rounded-xl font-medium text-sm transition-all flex items-center gap-2"
                         >
-                            <Upload className="w-4 h-4" /> Upload CSV
+                            <Upload className="w-4 h-4" /> Upload CSV/XLSX
                         </button>
-                        <input ref={fileInputRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleCSVUpload} />
+                        <button
+                            onClick={() => setDomains('notion.so\ngong.io\nramp.com\nintercom.com\nvanta.com\nmerge.dev')}
+                            disabled={loading}
+                            className="px-5 py-2.5 bg-[#0A0F1E] border border-slate-700/60 hover:border-slate-600 text-slate-300 rounded-xl font-medium text-sm transition-all"
+                        >
+                            Load Demo Domains
+                        </button>
+                        <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleCSVUpload} />
                     </div>
+                    <p className="mt-3 text-xs text-slate-500">
+                        Upload lead files with domains, websites, or work emails. We&apos;ll create lead records and enrich any business domains we can infer.
+                    </p>
                 </div>
+
+                {lastImport && (
+                    <div className="grid md:grid-cols-5 gap-3 mb-6">
+                        <ImportStat label="Rows Processed" value={lastImport.rows_processed} />
+                        <ImportStat label="Leads Imported" value={lastImport.leads_imported} />
+                        <ImportStat label="Leads Updated" value={lastImport.leads_updated} />
+                        <ImportStat label="Domains Queued" value={lastImport.domains_imported} />
+                        <ImportStat label="Rows Skipped" value={lastImport.rows_skipped} />
+                    </div>
+                )}
 
                 {/* Progress bar */}
                 {jobStatus && jobStatus.status !== 'completed' && (
@@ -178,6 +268,9 @@ export function EnrichmentDashboard({ icpId }: Props) {
                             </div>
                             <span className="text-sm text-slate-400 font-mono">{jobStatus.progress_pct}%</span>
                         </div>
+                        {phaseLabel && (
+                            <p className="mb-3 text-xs text-slate-400">{phaseLabel}</p>
+                        )}
                         <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
                             <div
                                 className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-500 ease-out"
@@ -186,6 +279,9 @@ export function EnrichmentDashboard({ icpId }: Props) {
                         </div>
                         {jobStatus.failed > 0 && (
                             <p className="mt-2 text-xs text-amber-400">{jobStatus.failed} failed (will retry on next run)</p>
+                        )}
+                        {jobStatus.status === 'failed' && jobStatus.error && (
+                            <p className="mt-2 text-xs text-red-400 break-words">{jobStatus.error}</p>
                         )}
                     </div>
                 )}
@@ -196,8 +292,17 @@ export function EnrichmentDashboard({ icpId }: Props) {
                         <div className="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
                             <h2 className="text-sm font-bold text-white flex items-center gap-2">
                                 <Database className="w-4 h-4 text-slate-400" />
-                                Enriched Companies ({profiles.length})
+                                Enriched Companies ({totalProfiles})
                             </h2>
+                            <div className="relative w-full max-w-sm">
+                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                                <input
+                                    value={profileQuery}
+                                    onChange={(event) => setProfileQuery(event.target.value)}
+                                    placeholder="Search company, domain, or enriched field"
+                                    className="w-full rounded-xl border border-slate-800/60 bg-[#0E1528] py-2.5 pl-9 pr-4 text-sm text-white outline-none focus:border-cyan-500/40"
+                                />
+                            </div>
                         </div>
                         <div className="divide-y divide-slate-800/40">
                             {profiles.map(profile => {
@@ -244,30 +349,82 @@ export function EnrichmentDashboard({ icpId }: Props) {
                                                 {(profile.sources_used || []).length > 3 && (
                                                     <span className="text-xs text-slate-600">+{profile.sources_used.length - 3}</span>
                                                 )}
+                                                <a
+                                                    href={`https://${profile.domain}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="ml-2 rounded-lg border border-slate-800/60 bg-[#0E1528] p-1.5 text-slate-500 transition-colors hover:text-white"
+                                                    onClick={(event) => event.stopPropagation()}
+                                                >
+                                                    <ExternalLink className="h-3.5 w-3.5" />
+                                                </a>
                                             </div>
                                         </button>
                                         {/* Expanded detail */}
                                         {isExpanded && (
-                                            <div className="px-12 pb-5 animate-in fade-in slide-in-from-top-2 duration-300">
-                                                <div className="bg-[#0A0F1E] rounded-xl border border-slate-800/40 divide-y divide-slate-800/30">
-                                                    {Object.entries(profile.enriched_data || {}).map(([field, dp]) => {
+                                            <div className="px-5 pb-5 md:px-12 animate-in fade-in slide-in-from-top-2 duration-300">
+                                                <div className="bg-[#0A0F1E] rounded-xl border border-slate-800/40 divide-y divide-slate-800/30 max-h-[420px] overflow-y-auto">
+                                                    {Object.entries(profile.enriched_data || {})
+                                                        .sort(([fieldA], [fieldB]) => {
+                                                            const priorityA = FIELD_PRIORITIES[fieldA] ?? 999;
+                                                            const priorityB = FIELD_PRIORITIES[fieldB] ?? 999;
+                                                            if (priorityA !== priorityB) return priorityA - priorityB;
+                                                            return fieldA.localeCompare(fieldB);
+                                                        })
+                                                        .map(([field, dp]) => {
                                                         const point = dp as DataPoint;
                                                         return (
-                                                            <div key={field} className="flex items-center px-4 py-3 gap-4">
-                                                                <span className="text-xs text-slate-500 font-mono w-32 shrink-0">{field}</span>
-                                                                <span className="text-sm text-white flex-1 truncate">
-                                                                    {formatDataValue(point.value)}
-                                                                </span>
-                                                                <div className="flex items-center gap-3 shrink-0">
-                                                                    <div className="w-12 h-1 bg-slate-800 rounded-full overflow-hidden">
-                                                                        <div
-                                                                            className={`h-full rounded-full ${point.confidence >= 0.7 ? 'bg-emerald-500' : point.confidence >= 0.5 ? 'bg-amber-500' : 'bg-red-500'}`}
-                                                                            style={{ width: `${point.confidence * 100}%` }}
-                                                                        />
+                                                            <div key={field} className="px-4 py-3">
+                                                                {(() => {
+                                                                    const evidenceState = describeEvidence(point.evidence);
+                                                                    return (
+                                                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+                                                                    <span className="text-xs text-slate-500 font-mono lg:w-32 shrink-0">{formatFieldLabel(field)}</span>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <div className="max-h-28 overflow-y-auto rounded-lg bg-white/[0.02] px-3 py-2">
+                                                                            <p className="text-sm text-white break-words whitespace-pre-wrap">
+                                                                                {formatDataValue(point.value) || '—'}
+                                                                            </p>
+                                                                        </div>
+                                                                        <div className="mt-2 max-h-24 overflow-y-auto rounded-lg border border-slate-800/50 bg-[#10172B] px-3 py-2">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${evidenceState.tone}`}>
+                                                                                    {evidenceState.label}
+                                                                                </span>
+                                                                            </div>
+                                                                            <p className="mt-2 text-xs text-slate-400 break-words whitespace-pre-wrap">{evidenceState.detail}</p>
+                                                                        </div>
+                                                                        {point.source_url && (
+                                                                            <div className="mt-2 max-h-20 overflow-y-auto rounded-lg border border-slate-800/50 bg-[#10172B] px-3 py-2">
+                                                                                <p className="text-[11px] uppercase tracking-wider text-slate-500">Source URL</p>
+                                                                                {isHttpUrl(point.source_url) ? (
+                                                                                    <a
+                                                                                        href={point.source_url}
+                                                                                        target="_blank"
+                                                                                        rel="noopener noreferrer"
+                                                                                        className="mt-1 inline-block text-xs text-cyan-300 break-all underline underline-offset-2 hover:text-cyan-200"
+                                                                                    >
+                                                                                        {point.source_url}
+                                                                                    </a>
+                                                                                ) : (
+                                                                                    <p className="mt-1 text-xs text-slate-400 break-all">{point.source_url}</p>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
                                                                     </div>
-                                                                    <span className="text-[10px] text-slate-500 font-mono w-8">{(point.confidence * 100).toFixed(0)}%</span>
-                                                                    <span className="text-[10px] text-slate-600 font-mono w-20 truncate">{point.source}</span>
+                                                                    <div className="flex items-center gap-3 shrink-0 lg:self-center">
+                                                                        <div className="w-12 h-1 bg-slate-800 rounded-full overflow-hidden">
+                                                                            <div
+                                                                                className={`h-full rounded-full ${point.confidence >= 0.7 ? 'bg-emerald-500' : point.confidence >= 0.5 ? 'bg-amber-500' : 'bg-red-500'}`}
+                                                                                style={{ width: `${point.confidence * 100}%` }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className="text-[10px] text-slate-500 font-mono w-8">{(point.confidence * 100).toFixed(0)}%</span>
+                                                                        <span className="text-[10px] text-slate-600 font-mono max-w-[120px] break-words text-right">{formatSourceLabel(point.source)}</span>
+                                                                    </div>
                                                                 </div>
+                                                                    );
+                                                                })()}
                                                             </div>
                                                         );
                                                     })}
@@ -278,9 +435,41 @@ export function EnrichmentDashboard({ icpId }: Props) {
                                 );
                             })}
                         </div>
+                        {totalProfilePages > 1 && (
+                            <div className="flex items-center justify-between border-t border-slate-800/60 px-4 py-3">
+                                <span className="text-xs text-slate-500">
+                                    Page {profilePage + 1} of {totalProfilePages}
+                                </span>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setProfilePage((current) => Math.max(0, current - 1))}
+                                        disabled={profilePage === 0}
+                                        className="rounded-xl border border-slate-800/60 bg-[#0E1528] p-2 text-slate-400 transition-all hover:text-white disabled:opacity-30"
+                                    >
+                                        <ChevronLeft className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                        onClick={() => setProfilePage((current) => Math.min(totalProfilePages - 1, current + 1))}
+                                        disabled={profilePage >= totalProfilePages - 1}
+                                        className="rounded-xl border border-slate-800/60 bg-[#0E1528] p-2 text-slate-400 transition-all hover:text-white disabled:opacity-30"
+                                    >
+                                        <ChevronRight className="h-4 w-4" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
+        </div>
+    );
+}
+
+function ImportStat({ label, value }: { label: string; value: number }) {
+    return (
+        <div className="rounded-xl border border-slate-800/60 bg-[#131A2E] px-4 py-3">
+            <p className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">{label}</p>
+            <p className="text-lg font-bold text-white mt-1">{value}</p>
         </div>
     );
 }

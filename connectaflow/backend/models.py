@@ -17,6 +17,7 @@ class Workspace(SQLModel, table=True):
     id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, primary_key=True)
     name: str = Field(default="Default Workspace")
     settings: Dict = Field(default={}, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class WorkspaceMember(SQLModel, table=True):
@@ -237,7 +238,6 @@ class Campaign(SQLModel, table=True):
     smartlead_id: Optional[str] = None
     volume_warn_threshold: int = 200
     volume_block_threshold: int = 50
-    created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

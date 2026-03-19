@@ -3,28 +3,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Target, Brain, Sparkles, Workflow, RefreshCw, Loader2, Plus, ShieldCheck,
-    Compass, AlertTriangle, ListTree, FlaskRound, MessageSquare
+    Compass, AlertTriangle, ListTree, FlaskRound
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
     listGTMContexts, createGTMContext, getGTMContext, updateGTMContext, generateGTMStrategy, refineFromEnrichment,
     parseGTMContextFiles, generateICPSuggestions, generateSourcingGuide,
-    type GTMContextSummary, type GTMContextDetail, type PersonaData, type BuyingTriggerData,
-    type SignalDefinitionData, type GTMPlayData, type ICPSuggestion
+    type GTMContextSummary, type GTMContextDetail, type ICPSuggestion
 } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
+import { Chip, Enrichment, Overview, Personas, Plays, Signals, Triggers } from './gtm/GTMContextSections';
 
 type TabKey = 'overview' | 'personas' | 'triggers' | 'signals' | 'plays' | 'enrichment';
 
 interface Props {
     onICPGenerated?: (id: string) => void;
+    preferredContextId?: string | null;
 }
 
-const chip = (text: string, color: string) => (
-    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${color}`}>{text}</span>
-);
-
-export function GTMIntelligence({ onICPGenerated }: Props) {
+export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
     const [contexts, setContexts] = useState<GTMContextSummary[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [detail, setDetail] = useState<GTMContextDetail | null>(null);
@@ -146,6 +143,11 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
             }
         })();
     }, [demoPrefilled, handleLoadDemo, loadContexts, selectContext, selectedId]);
+
+    useEffect(() => {
+        if (!preferredContextId || preferredContextId === selectedId) return;
+        void selectContext(preferredContextId);
+    }, [preferredContextId, selectContext, selectedId]);
 
     const handleCreate = async () => {
         if (!name.trim()) {
@@ -448,9 +450,9 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                                         <p className="text-sm font-semibold truncate">{ctx.name}</p>
                                         <p className="text-xs text-slate-500 truncate">{ctx.product_description || 'No description'}</p>
                                         <div className="mt-1 flex gap-1 text-[11px] text-slate-500">
-                                            {chip(`${ctx.persona_count} personas`, 'bg-slate-800 text-slate-300')}
-                                            {chip(`${ctx.trigger_count} triggers`, 'bg-slate-800 text-slate-300')}
-                                            {chip(`${ctx.play_count} plays`, 'bg-slate-800 text-slate-300')}
+                                            <Chip text={`${ctx.persona_count} personas`} color="bg-slate-800 text-slate-300" />
+                                            <Chip text={`${ctx.trigger_count} triggers`} color="bg-slate-800 text-slate-300" />
+                                            <Chip text={`${ctx.play_count} plays`} color="bg-slate-800 text-slate-300" />
                                         </div>
                                     </button>
                                 ))}
@@ -461,13 +463,22 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                         </div>
 
                         <div className="bg-[#0F162B] border border-slate-800/70 rounded-2xl p-4 space-y-3">
+                            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                                <div className="flex items-center gap-2 mb-1.5">
+                                    <FlaskRound className="w-4 h-4 text-cyan-300" />
+                                    <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">Test This Module</p>
+                                </div>
+                                <p className="text-xs text-slate-300 leading-5">
+                                    Use `Load Demo Input`, create the context, then hit `Generate Strategy`. That gives you a real persisted thesis with personas, triggers, signals, and plays to inspect.
+                                </p>
+                            </div>
                             <div className="flex items-center gap-2">
                                 <Plus className="w-4 h-4 text-emerald-400" />
                                 <p className="text-sm font-semibold text-white">New Context</p>
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 <button
-                                    onClick={handleLoadDemo}
+                                    onClick={() => handleLoadDemo()}
                                     className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-semibold border border-emerald-500/20 hover:bg-emerald-500/20"
                                 >
                                     Load Demo Input
@@ -587,10 +598,10 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
                                             <h2 className="text-lg font-bold text-white">{detail.name}</h2>
                                             <p className="text-sm text-slate-400 leading-relaxed">{detail.product_description || 'No product description'}</p>
                                             <div className="flex flex-wrap gap-2 mt-3 text-[11px]">
-                                                {detail.target_industries?.map(ind => chip(ind, 'bg-slate-800 text-slate-200'))}
-                                                {detail.pricing_model && chip(detail.pricing_model, 'bg-slate-800 text-slate-200')}
-                                                {detail.avg_deal_size && chip(detail.avg_deal_size, 'bg-slate-800 text-slate-200')}
-                                                {typeof detail.context_quality_score === 'number' && chip(`Context Quality ${detail.context_quality_score}%`, 'bg-emerald-500/15 text-emerald-200')}
+                                                {detail.target_industries?.map(ind => <Chip key={ind} text={ind} color="bg-slate-800 text-slate-200" />)}
+                                                {detail.pricing_model && <Chip text={detail.pricing_model} color="bg-slate-800 text-slate-200" />}
+                                                {detail.avg_deal_size && <Chip text={detail.avg_deal_size} color="bg-slate-800 text-slate-200" />}
+                                                {typeof detail.context_quality_score === 'number' && <Chip text={`Context Quality ${detail.context_quality_score}%`} color="bg-emerald-500/15 text-emerald-200" />}
                                             </div>
                                         </div>
                                         {stats && (
@@ -652,188 +663,3 @@ export function GTMIntelligence({ onICPGenerated }: Props) {
 // Helpers
 const parseList = (val: string) =>
     val.split(',').map(v => v.trim()).filter(Boolean);
-
-// Overview section
-function Overview({ detail }: { detail: GTMContextDetail }) {
-    const info = [
-        { label: 'Core Problem', value: detail.core_problem },
-        { label: 'Product Category', value: detail.product_category },
-        { label: 'Value Proposition', value: detail.value_proposition },
-        { label: 'Why Customers Buy', value: detail.why_customers_buy },
-        { label: 'Why Customers Churn', value: detail.why_customers_churn },
-        { label: 'Decision Process', value: detail.decision_process },
-        { label: 'Common Objections', value: detail.common_objections?.join(', ') },
-        { label: 'Key Integrations', value: detail.key_integrations?.join(', ') },
-        { label: 'Geographic Focus', value: detail.geographic_focus },
-        { label: 'Competitors', value: detail.competitors?.join(', ') },
-        { label: 'Sales Cycle', value: detail.sales_cycle_days },
-        { label: 'Avg Deal Size', value: detail.avg_deal_size },
-        { label: 'Market Maturity', value: detail.market_maturity },
-    ];
-    return (
-        <div className="space-y-4">
-            <div className="grid md:grid-cols-2 gap-4">
-                {info.map(item => (
-                    <div key={item.label} className="p-3 rounded-xl bg-[#0A0F1E] border border-slate-800/60">
-                        <p className="text-[11px] uppercase text-slate-500 font-semibold tracking-wider">{item.label}</p>
-                        <p className="text-sm text-white mt-1 leading-relaxed">{item.value || '—'}</p>
-                    </div>
-                ))}
-            </div>
-            <div className="bg-[#0A0F1E] border border-slate-800/60 rounded-xl p-4">
-                <p className="text-xs uppercase text-slate-500 font-semibold mb-2">Customer Examples</p>
-                <div className="flex flex-wrap gap-2 text-[12px] text-slate-200">
-                    {detail.customer_examples?.length ? detail.customer_examples.map(c => chip(c, 'bg-slate-800 text-slate-200')) : '—'}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function Personas({ personas }: { personas: PersonaData[] }) {
-    if (!personas.length) return <EmptyState text="No personas yet. Generate strategy to create them." />;
-    return (
-        <div className="grid md:grid-cols-2 gap-4">
-            {personas.map(p => (
-                <div key={p.id} className="p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm font-semibold text-white">{p.name}</p>
-                            <p className="text-xs text-slate-500">{p.department} • {p.seniority}</p>
-                        </div>
-                        {chip(p.decision_role || 'Role', 'bg-cyan-500/15 text-cyan-200')}
-                    </div>
-                    <Field label="Titles" value={p.job_titles?.join(', ')} />
-                    <Field label="KPIs" value={p.kpis?.join(', ')} />
-                    <Field label="Pain Points" value={p.pain_points?.join('; ')} />
-                    <Field label="Buying Style" value={p.buying_style} />
-                    <Field label="Information Diet" value={p.information_diet?.join(', ')} />
-                    <Field label="Objections" value={p.objections?.join('; ')} />
-                    <Field label="Internal Politics" value={p.internal_politics} />
-                    <Field label="Trigger Phrases" value={p.trigger_phrases?.join('; ')} />
-                    <Field label="Day in Life" value={p.day_in_life} />
-                    <Field label="Success Looks Like" value={p.success_looks_like} />
-                    <Field label="Nightmare Scenario" value={p.nightmare_scenario} />
-                    <Field label="Evaluation Criteria" value={p.evaluation_criteria?.join(', ')} />
-                    <Field label="Messaging Do" value={p.messaging_do?.join('; ')} />
-                    <Field label="Messaging Don’t" value={p.messaging_dont?.join('; ')} />
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function Triggers({ triggers }: { triggers: BuyingTriggerData[] }) {
-    if (!triggers.length) return <EmptyState text="No triggers yet." />;
-    return (
-        <div className="grid md:grid-cols-2 gap-4">
-            {triggers.map(t => (
-                <div key={t.id} className="p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm font-semibold text-white">{t.name}</p>
-                            <p className="text-xs text-slate-500">{t.category || 'uncategorized'}</p>
-                        </div>
-                        {chip(t.urgency_level || 'timing', 'bg-amber-500/15 text-amber-200')}
-                    </div>
-                    <Field label="Description" value={t.description} />
-                    <Field label="Why it matters" value={t.why_it_matters} />
-                    <Field label="Ideal timing" value={t.ideal_timing} />
-                    <Field label="Qualifying questions" value={t.qualifying_questions?.join('; ')} />
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function Signals({ signals }: { signals: SignalDefinitionData[] }) {
-    if (!signals.length) return <EmptyState text="No signal definitions yet." />;
-    return (
-        <div className="grid md:grid-cols-2 gap-4">
-            {signals.map(s => (
-                <div key={s.id} className="p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm font-semibold text-white">{s.name}</p>
-                            <p className="text-xs text-slate-500">{s.source} • {s.detection_method}</p>
-                        </div>
-                        {chip(`Strength ${Math.round((s.strength_score || 0) * 100)}%`, 'bg-cyan-500/15 text-cyan-200')}
-                    </div>
-                    <Field label="Description" value={s.description} />
-                    <Field label="Keywords" value={s.keywords?.join(', ')} />
-                    <Field label="False positives" value={s.false_positive_notes} />
-                    <Field label="Fields used" value={s.enrichment_fields_used?.join(', ')} />
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function Plays({ plays }: { plays: GTMPlayData[] }) {
-    if (!plays.length) return <EmptyState text="No plays yet." />;
-    return (
-        <div className="space-y-4">
-            {plays.map(pl => (
-                <div key={pl.id} className="p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm font-semibold text-white">{pl.name}</p>
-                            <p className="text-xs text-slate-500">{pl.icp_statement}</p>
-                        </div>
-                        {chip(pl.status || 'draft', 'bg-emerald-500/15 text-emerald-200')}
-                    </div>
-                    <Field label="Trigger / Signal / Persona" value={[pl.trigger_id, pl.signal_id, pl.persona_id].filter(Boolean).join(' • ') || '—'} />
-                    <Field label="Messaging angle" value={pl.messaging_angle} />
-                    <Field label="Channel sequence" value={pl.channel_sequence?.join(' → ')} />
-                    <Field label="Timing rationale" value={pl.timing_rationale} />
-                    <Field label="Opening hook" value={pl.opening_hook} />
-                    <Field label="Objection handling" value={formatObjections(pl.objection_handling)} />
-                    <Field label="Competitive positioning" value={pl.competitive_positioning} />
-                    <Field label="Success criteria" value={pl.success_criteria} />
-                    <Field label="Email subject lines" value={pl.email_subject_lines?.join(' | ')} />
-                    <Field label="Call talk track" value={pl.call_talk_track} />
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function Enrichment({ patterns }: { patterns: Record<string, unknown> | null }) {
-    if (!patterns) return <EmptyState text="No enrichment feedback yet. Run Refine from Enrichment." />;
-    return (
-        <div className="grid md:grid-cols-2 gap-4">
-            {Object.entries(patterns).map(([k, v]) => (
-                <div key={k} className="p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-2">
-                    <div className="flex items-center gap-2 text-slate-300">
-                        <FlaskRound className="w-4 h-4 text-cyan-300" />
-                        <p className="text-sm font-semibold capitalize">{k.replace('_', ' ')}</p>
-                    </div>
-                    <pre className="text-xs text-slate-300 whitespace-pre-wrap leading-relaxed">{JSON.stringify(v, null, 2)}</pre>
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function Field({ label, value }: { label: string; value?: string | number | null }) {
-    return (
-        <div>
-            <p className="text-[11px] uppercase text-slate-500 font-semibold tracking-wider">{label}</p>
-            <p className="text-sm text-white leading-relaxed">{value || '—'}</p>
-        </div>
-    );
-}
-
-function EmptyState({ text }: { text: string }) {
-    return (
-        <div className="flex items-center gap-2 text-slate-500 text-sm">
-            <MessageSquare className="w-4 h-4" />
-            <span>{text}</span>
-        </div>
-    );
-}
-
-function formatObjections(obj?: Record<string, string>) {
-    if (!obj) return '—';
-    return Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join(' | ');
-}

@@ -81,8 +81,19 @@ def detect_negative_space(fetch_results: dict[str, any], domain: str) -> list[Si
     """
     signals = []
 
+    page_statuses = fetch_results.get("page_statuses")
+    if isinstance(page_statuses, dict) and page_statuses:
+        items = page_statuses.items()
+    else:
+        # Backward-compatible fallback for older metadata shapes.
+        items = (
+            (path, meta)
+            for path, meta in fetch_results.items()
+            if isinstance(path, str) and path.startswith("/")
+        )
+
     # Check each path's status
-    for path, meta in fetch_results.items():
+    for path, meta in items:
         status = 0
         if hasattr(meta, 'status'):
             status = meta.status
@@ -139,6 +150,17 @@ def detect_all_signals(
 
     # Negative space signals
     signals.extend(detect_negative_space(fetch_meta, domain))
+
+    deduped: dict[str, Signal] = {}
+    for signal in signals:
+        current = deduped.get(signal.signal_type)
+        if current is None or signal.strength > current.strength:
+            deduped[signal.signal_type] = signal
+
+    if any(signal_type.startswith("hiring_") for signal_type in deduped):
+        deduped.pop("not_hiring", None)
+
+    signals = list(deduped.values())
 
     logger.debug(f"{domain}: detected {len(signals)} signals")
     return signals

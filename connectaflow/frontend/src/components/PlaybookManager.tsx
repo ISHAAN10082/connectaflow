@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import {
     listPlaybooks, createPlaybook, getPlaybook, updatePlaybook, deletePlaybook,
     createPlay, updatePlay, deletePlay,
-    createPlayStep, deletePlayStep,
+    createPlayStep, deletePlayStep, updateEnrollmentProgress,
     autoEnrollPlaybook, getPlaybookTemplates, applyPlaybookTemplate,
     listICPs,
     type PlaybookSummary, type PlaybookDetail, type PlayData,
@@ -44,7 +44,7 @@ type TriggerRuleForm = {
     min_signals?: number;
 };
 
-type StepConfigValue = string | number | boolean | string[] | undefined;
+type StepConfigValue = string | number | string[] | undefined;
 type StepConfig = Record<string, StepConfigValue>;
 
 export function PlaybookManager({ icpId }: Props) {
@@ -82,6 +82,7 @@ export function PlaybookManager({ icpId }: Props) {
 
     // Auto-enroll state
     const [enrolling, setEnrolling] = useState(false);
+    const [actingEnrollmentId, setActingEnrollmentId] = useState<string | null>(null);
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -281,6 +282,25 @@ export function PlaybookManager({ icpId }: Props) {
         });
     };
 
+    const handleEnrollmentAction = async (
+        enrollmentId: string,
+        payload: { action: 'pause' | 'resume' | 'advance' | 'complete' | 'exit'; outcome?: string; notes?: string },
+        successMessage: string,
+    ) => {
+        if (!selectedPlaybook) return;
+        setActingEnrollmentId(enrollmentId);
+        try {
+            await updateEnrollmentProgress(enrollmentId, payload);
+            toast.success(successMessage);
+            await selectPlaybook(selectedPlaybook.id);
+            await loadData();
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to update enrollment'));
+        } finally {
+            setActingEnrollmentId(null);
+        }
+    };
+
     if (loading) {
         return (
             <div className="h-full flex items-center justify-center">
@@ -288,6 +308,14 @@ export function PlaybookManager({ icpId }: Props) {
             </div>
         );
     }
+
+    const playbookEnrollments = selectedPlaybook?.plays.flatMap(play => play.enrollments) || [];
+    const activeEnrollments = playbookEnrollments.filter(enrollment => enrollment.status === 'active');
+    const pausedEnrollments = playbookEnrollments.filter(enrollment => enrollment.status === 'paused');
+    const completedEnrollments = playbookEnrollments.filter(enrollment => enrollment.status === 'completed');
+    const actionReadyEnrollments = activeEnrollments.filter((enrollment) =>
+        enrollment.current_step_detail?.step_type === 'email' || enrollment.current_step_detail?.step_type === 'task'
+    );
 
     return (
         <div className="h-full overflow-y-auto" id="playbook-manager">
@@ -500,6 +528,54 @@ export function PlaybookManager({ icpId }: Props) {
                                             Linked to ICP: <span className="text-cyan-400 font-medium">{icps.find(i => i.id === selectedPlaybook.icp_id)?.name || selectedPlaybook.icp_id}</span>
                                         </div>
                                     )}
+
+                                    <div className="grid grid-cols-4 gap-3 mt-5">
+                                        <ExecutionStatCard label="Ready To Work" value={actionReadyEnrollments.length} tone="cyan" sub="email or task step live" />
+                                        <ExecutionStatCard label="Active" value={activeEnrollments.length} tone="emerald" sub="currently executing" />
+                                        <ExecutionStatCard label="Paused" value={pausedEnrollments.length} tone="amber" sub="awaiting operator" />
+                                        <ExecutionStatCard label="Completed" value={completedEnrollments.length} tone="blue" sub="captured outcome" />
+                                    </div>
+
+                                    {actionReadyEnrollments.length > 0 && (
+                                        <div className="mt-5 rounded-2xl border border-cyan-500/15 bg-cyan-500/[0.04] p-4">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div>
+                                                    <p className="text-[11px] uppercase tracking-[0.16em] text-cyan-300/80 font-semibold">Execution Focus</p>
+                                                    <h3 className="mt-1 text-sm font-bold text-white">Accounts ready for the next operator move</h3>
+                                                </div>
+                                                <span className="rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-200">
+                                                    {actionReadyEnrollments.length} ready
+                                                </span>
+                                            </div>
+                                            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                                                {actionReadyEnrollments.slice(0, 8).map((enrollment) => (
+                                                    <div key={enrollment.id} className="rounded-xl border border-slate-800/50 bg-[#0E1528] px-4 py-3">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <p className="truncate text-sm font-semibold text-white">
+                                                                    {enrollment.lead?.email || enrollment.domain || 'Unknown account'}
+                                                                </p>
+                                                                <p className="mt-1 text-xs text-slate-400">
+                                                                    Step {enrollment.current_step}
+                                                                    {enrollment.current_step_detail ? ` • ${enrollment.current_step_detail.label}` : ''}
+                                                                </p>
+                                                                {enrollment.current_step_detail?.description && (
+                                                                    <p className="mt-1 text-xs text-slate-500 line-clamp-2">{enrollment.current_step_detail.description}</p>
+                                                                )}
+                                                            </div>
+                                                            <button
+                                                                onClick={() => handleEnrollmentAction(enrollment.id, { action: 'advance' }, 'Enrollment advanced')}
+                                                                disabled={actingEnrollmentId === enrollment.id}
+                                                                className="rounded-lg bg-cyan-500/10 px-2.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-50"
+                                                            >
+                                                                {actingEnrollmentId === enrollment.id ? 'Working...' : 'Advance'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Add Play Form */}
@@ -555,6 +631,12 @@ export function PlaybookManager({ icpId }: Props) {
                                             setNewStepConfig={setNewStepConfig}
                                             onSubmitStep={() => handleAddStep(play.id)}
                                             onCancelStep={() => setAddingStepTo(null)}
+                                            actingEnrollmentId={actingEnrollmentId}
+                                            onAdvanceEnrollment={(enrollmentId) => handleEnrollmentAction(enrollmentId, { action: 'advance' }, 'Enrollment advanced')}
+                                            onPauseEnrollment={(enrollmentId) => handleEnrollmentAction(enrollmentId, { action: 'pause' }, 'Enrollment paused')}
+                                            onResumeEnrollment={(enrollmentId) => handleEnrollmentAction(enrollmentId, { action: 'resume' }, 'Enrollment resumed')}
+                                            onWinEnrollment={(enrollmentId) => handleEnrollmentAction(enrollmentId, { action: 'complete', outcome: 'meeting_booked' }, 'Outcome captured')}
+                                            onExitEnrollment={(enrollmentId) => handleEnrollmentAction(enrollmentId, { action: 'exit', outcome: 'disqualified' }, 'Enrollment exited')}
                                         />
                                     ))
                                 )}
@@ -590,12 +672,19 @@ interface PlayCardProps {
     setNewStepConfig: (v: StepConfig) => void;
     onSubmitStep: () => void;
     onCancelStep: () => void;
+    actingEnrollmentId: string | null;
+    onAdvanceEnrollment: (enrollmentId: string) => void;
+    onPauseEnrollment: (enrollmentId: string) => void;
+    onResumeEnrollment: (enrollmentId: string) => void;
+    onWinEnrollment: (enrollmentId: string) => void;
+    onExitEnrollment: (enrollmentId: string) => void;
 }
 
 function PlayCard({
     play, expanded, onToggle, onDelete, onAddStep, onDeleteStep,
     editingTriggers, onEditTriggers, onSaveTriggers, onCancelTriggers, triggerForm, setTriggerForm,
     addingStep, newStepType, setNewStepType, newStepConfig, setNewStepConfig, onSubmitStep, onCancelStep,
+    actingEnrollmentId, onAdvanceEnrollment, onPauseEnrollment, onResumeEnrollment, onWinEnrollment, onExitEnrollment,
 }: PlayCardProps) {
     const rules = (play.trigger_rules || {}) as TriggerRuleForm;
     const hasTriggers = Object.keys(rules).length > 0;
@@ -683,22 +772,22 @@ function PlayCard({
                             </div>
                         ) : hasTriggers ? (
                             <div className="flex flex-wrap gap-2">
-                                {rules.fit_categories?.length > 0 && (
+                                {(rules.fit_categories?.length ?? 0) > 0 && (
                                     <span className="px-2.5 py-1 bg-cyan-500/10 text-cyan-400 rounded-lg text-[11px] font-medium">
-                                        Fit: {rules.fit_categories.join(', ')}
+                                        Fit: {(rules.fit_categories || []).join(', ')}
                                     </span>
                                 )}
-                                {rules.min_score > 0 && (
+                                {(rules.min_score ?? 0) > 0 && (
                                     <span className="px-2.5 py-1 bg-blue-500/10 text-blue-400 rounded-lg text-[11px] font-medium">
                                         Score ≥ {rules.min_score}
                                     </span>
                                 )}
-                                {rules.signal_types?.length > 0 && (
+                                {(rules.signal_types?.length ?? 0) > 0 && (
                                     <span className="px-2.5 py-1 bg-amber-500/10 text-amber-400 rounded-lg text-[11px] font-medium">
-                                        Signals: {rules.signal_types.join(', ')}
+                                        Signals: {(rules.signal_types || []).join(', ')}
                                     </span>
                                 )}
-                                {rules.min_signals > 0 && (
+                                {(rules.min_signals ?? 0) > 0 && (
                                     <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 rounded-lg text-[11px] font-medium">
                                         ≥{rules.min_signals} signals
                                     </span>
@@ -749,7 +838,7 @@ function PlayCard({
                                                         <X className="w-3 h-3" />
                                                     </button>
                                                 </div>
-                                                <StepConfigDisplay type={step.step_type} config={step.config} />
+                                                <StepConfigDisplay type={step.step_type} config={step.config as StepConfig} />
                                             </div>
                                         </div>
                                     );
@@ -786,19 +875,60 @@ function PlayCard({
                             <h5 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                                 <Users className="w-3 h-3" /> Enrolled ({play.enrollment_count})
                             </h5>
-                            <div className="space-y-1 max-h-40 overflow-y-auto">
+                            <div className="space-y-2 max-h-72 overflow-y-auto">
                                 {play.enrollments.slice(0, 20).map(e => (
-                                    <div key={e.id} className="flex items-center justify-between bg-[#0A0F1E] rounded-lg px-3 py-2">
-                                        <div className="flex items-center gap-2 min-w-0">
-                                            <span className="text-xs text-white font-medium truncate">
-                                                {e.lead?.email || e.domain || 'Unknown'}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2 flex-shrink-0">
-                                            <span className="text-[10px] text-slate-500">Step {e.current_step}</span>
-                                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${e.status === 'active' ? 'text-emerald-400 bg-emerald-500/10' : e.status === 'completed' ? 'text-blue-400 bg-blue-500/10' : 'text-slate-500 bg-slate-800/40'}`}>
-                                                {e.status}
-                                            </span>
+                                    <div key={e.id} className="bg-[#0A0F1E] rounded-xl px-3 py-3 border border-slate-800/30">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div className="min-w-0">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xs text-white font-medium truncate">
+                                                        {e.lead?.email || e.domain || 'Unknown'}
+                                                    </span>
+                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${e.status === 'active'
+                                                            ? 'text-emerald-400 bg-emerald-500/10'
+                                                            : e.status === 'completed'
+                                                                ? 'text-blue-400 bg-blue-500/10'
+                                                                : e.status === 'paused'
+                                                                    ? 'text-amber-400 bg-amber-500/10'
+                                                                    : 'text-slate-500 bg-slate-800/40'
+                                                        }`}>
+                                                        {e.status}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-1 text-[11px] text-slate-400">
+                                                    Step {e.current_step}
+                                                    {e.current_step_detail ? ` • ${e.current_step_detail.label}: ${e.current_step_detail.description}` : ''}
+                                                </div>
+                                                {e.next_step_detail && e.status === 'active' && (
+                                                    <div className="mt-1 text-[11px] text-slate-500">
+                                                        Next: {e.next_step_detail.label} • {e.next_step_detail.description}
+                                                    </div>
+                                                )}
+                                                {e.step_history && e.step_history.length > 0 && (
+                                                    <div className="mt-1 text-[11px] text-slate-500">
+                                                        Last event: {e.step_history[e.step_history.length - 1]?.action}
+                                                        {e.step_history[e.step_history.length - 1]?.outcome ? ` • ${e.step_history[e.step_history.length - 1]?.outcome}` : ''}
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="flex flex-wrap justify-end gap-2 flex-shrink-0">
+                                                {e.status === 'active' && (
+                                                    <>
+                                                        <EnrollmentActionButton label="Advance" tone="blue" busy={actingEnrollmentId === e.id} onClick={() => onAdvanceEnrollment(e.id)} />
+                                                        <EnrollmentActionButton label="Pause" tone="amber" busy={actingEnrollmentId === e.id} onClick={() => onPauseEnrollment(e.id)} />
+                                                    </>
+                                                )}
+                                                {e.status === 'paused' && (
+                                                    <EnrollmentActionButton label="Resume" tone="emerald" busy={actingEnrollmentId === e.id} onClick={() => onResumeEnrollment(e.id)} />
+                                                )}
+                                                {e.status !== 'completed' && e.status !== 'exited' && (
+                                                    <>
+                                                        <EnrollmentActionButton label="Mark Won" tone="emerald" busy={actingEnrollmentId === e.id} onClick={() => onWinEnrollment(e.id)} />
+                                                        <EnrollmentActionButton label="Exit" tone="slate" busy={actingEnrollmentId === e.id} onClick={() => onExitEnrollment(e.id)} />
+                                                    </>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                 ))}
@@ -823,6 +953,52 @@ function PlayCard({
 
 
 // ─── Step Config Display ─────────────────────────────────────
+
+function ExecutionStatCard({ label, value, sub, tone }: { label: string; value: number; sub: string; tone: 'cyan' | 'emerald' | 'amber' | 'blue' }) {
+    const toneStyles = {
+        cyan: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20',
+        emerald: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20',
+        amber: 'bg-amber-500/10 text-amber-300 border-amber-500/20',
+        blue: 'bg-blue-500/10 text-blue-300 border-blue-500/20',
+    };
+
+    return (
+        <div className={`rounded-xl border px-4 py-3 ${toneStyles[tone]}`}>
+            <div className="text-xl font-bold text-white">{value}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider mt-1">{label}</div>
+            <div className="text-[11px] text-slate-400 mt-1">{sub}</div>
+        </div>
+    );
+}
+
+function EnrollmentActionButton({
+    label,
+    tone,
+    busy,
+    onClick,
+}: {
+    label: string;
+    tone: 'blue' | 'amber' | 'emerald' | 'slate';
+    busy: boolean;
+    onClick: () => void;
+}) {
+    const toneStyles = {
+        blue: 'bg-blue-500/10 text-blue-300 hover:bg-blue-500/20',
+        amber: 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20',
+        emerald: 'bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20',
+        slate: 'bg-slate-800 text-slate-300 hover:bg-slate-700',
+    };
+
+    return (
+        <button
+            onClick={onClick}
+            disabled={busy}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-50 ${toneStyles[tone]}`}
+        >
+            {busy ? '...' : label}
+        </button>
+    );
+}
 
 function StepConfigDisplay({ type, config }: { type: string; config: StepConfig }) {
     const formatValue = (value: StepConfigValue, fallback: string) => {

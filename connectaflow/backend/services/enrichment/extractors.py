@@ -37,6 +37,11 @@ def extract_schema_org(html: str, source_url: str) -> list[DataPoint]:
                 if _type in ("Organization", "Corporation", "LocalBusiness", "Company"):
                     if name := item.get("name"):
                         points.append(DataPoint(value=name, confidence=0.95, source="schema_org", source_url=source_url, evidence=f"schema.org @type={_type}"))
+                    if telephone := item.get("telephone"):
+                        phones = telephone if isinstance(telephone, list) else [telephone]
+                        cleaned = [str(phone).strip() for phone in phones if str(phone).strip()]
+                        if cleaned:
+                            points.append(DataPoint(value=cleaned[:5], confidence=0.92, source="schema_org", source_url=source_url, evidence=f"schema.org telephone={cleaned[0]}"))
                     if emp := item.get("numberOfEmployees"):
                         val = emp.get("value") if isinstance(emp, dict) else emp
                         if val:
@@ -53,6 +58,26 @@ def extract_schema_org(html: str, source_url: str) -> list[DataPoint]:
                         points.append(DataPoint(value=industry, confidence=0.85, source="schema_org", source_url=source_url, evidence=f"industry={industry}"))
                     if desc := item.get("description"):
                         points.append(DataPoint(value=desc[:500], confidence=0.85, source="schema_org", source_url=source_url, evidence="schema.org description"))
+                    same_as = item.get("sameAs")
+                    same_as_urls = same_as if isinstance(same_as, list) else ([same_as] if same_as else [])
+                    linkedin_urls = [str(url).strip() for url in same_as_urls if isinstance(url, str) and "linkedin.com" in url.lower()]
+                    if linkedin_urls:
+                        points.append(DataPoint(value=linkedin_urls[:5], confidence=0.90, source="schema_org", source_url=source_url, evidence="schema.org sameAs LinkedIn"))
+                    contact_point = item.get("contactPoint")
+                    contact_points = contact_point if isinstance(contact_point, list) else ([contact_point] if contact_point else [])
+                    for contact in contact_points:
+                        if not isinstance(contact, dict):
+                            continue
+                        if telephone := contact.get("telephone"):
+                            phones = telephone if isinstance(telephone, list) else [telephone]
+                            cleaned = [str(phone).strip() for phone in phones if str(phone).strip()]
+                            if cleaned:
+                                points.append(DataPoint(value=cleaned[:5], confidence=0.90, source="schema_org", source_url=source_url, evidence=f"schema.org contactPoint telephone={cleaned[0]}"))
+                        same_as = contact.get("sameAs")
+                        same_as_urls = same_as if isinstance(same_as, list) else ([same_as] if same_as else [])
+                        linkedin_urls = [str(url).strip() for url in same_as_urls if isinstance(url, str) and "linkedin.com" in url.lower()]
+                        if linkedin_urls:
+                            points.append(DataPoint(value=linkedin_urls[:5], confidence=0.88, source="schema_org", source_url=source_url, evidence="schema.org contactPoint LinkedIn"))
         except (json.JSONDecodeError, TypeError, AttributeError):
             continue
 
@@ -137,6 +162,9 @@ TECH_SCRIPT_PATTERNS = {
     "google_analytics": re.compile(r'googletagmanager|google-analytics|gtag', re.IGNORECASE),
     "shopify": re.compile(r'cdn\.shopify|shopify', re.IGNORECASE),
 }
+
+TEL_LINK_PATTERN = re.compile(r'href=["\']tel:([^"\']+)["\']', re.IGNORECASE)
+LINKEDIN_LINK_PATTERN = re.compile(r'https?://(?:[\w-]+\.)?linkedin\.com/(?:company|in|school)/[^\s"\'<>]+', re.IGNORECASE)
 
 
 def extract_from_text(html: str, source_url: str) -> list[DataPoint]:
@@ -271,6 +299,44 @@ def extract_tech_from_scripts(html: str, source_url: str) -> list[DataPoint]:
     ]
 
 
+def extract_contact_points(html: str, source_url: str) -> list[DataPoint]:
+    """Extract public phone numbers and LinkedIn URLs that are explicitly published on the page."""
+    points = []
+
+    phones = []
+    for match in TEL_LINK_PATTERN.finditer(html):
+        phone = re.sub(r"[^\d+()\-.\s]", "", match.group(1)).strip()
+        if phone:
+            phones.append(phone)
+
+    linkedin_urls = []
+    for match in LINKEDIN_LINK_PATTERN.finditer(html):
+        linkedin_urls.append(match.group(0).rstrip(').,;'))
+
+    unique_phones = sorted(set(phones))
+    unique_linkedin = sorted(set(linkedin_urls))
+
+    if unique_phones:
+        points.append(DataPoint(
+            value=unique_phones[:5],
+            confidence=0.78,
+            source="contact_points",
+            source_url=source_url,
+            evidence=f"Public phone links: {', '.join(unique_phones[:3])}",
+        ))
+
+    if unique_linkedin:
+        points.append(DataPoint(
+            value=unique_linkedin[:5],
+            confidence=0.76,
+            source="contact_points",
+            source_url=source_url,
+            evidence="Public LinkedIn links found on the company site",
+        ))
+
+    return points
+
+
 # ─────────────────────────────────────────────────────────────
 # Master extractor: runs all deterministic extractors on a page
 # ─────────────────────────────────────────────────────────────
@@ -283,4 +349,5 @@ def extract_all_from_page(html: str, headers: dict, source_url: str) -> list[Dat
     points.extend(extract_from_text(html, source_url))
     points.extend(extract_tech_from_headers(headers, source_url))
     points.extend(extract_tech_from_scripts(html, source_url))
+    points.extend(extract_contact_points(html, source_url))
     return points

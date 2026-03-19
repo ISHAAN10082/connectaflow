@@ -9,8 +9,10 @@ from loguru import logger
 
 # Source reliability tiers (lower = more authoritative)
 SOURCE_TIERS = {
+    "manual_override": 0,
     "schema_org": 1,
     "dns_mx": 1,
+    "contact_points": 1,
     "http_headers": 2,
     "html_scripts": 2,
     "meta_og": 2,
@@ -25,6 +27,11 @@ SOURCE_TIERS = {
 def _normalize_for_comparison(val) -> str:
     """Normalize a value for fuzzy comparison."""
     return str(val).lower().strip().replace(",", "").replace(".", "")
+
+
+def _format_source_list(sources: list[str]) -> str:
+    unique = list(dict.fromkeys(source for source in sources if source))
+    return ", ".join(unique)
 
 
 def cross_validate_field(candidates: list[DataPoint], field_name: str = "") -> Optional[DataPoint]:
@@ -57,14 +64,16 @@ def cross_validate_field(candidates: list[DataPoint], field_name: str = "") -> O
         # All sources agree → boost confidence
         best = valid[0]
         best.confidence = min(0.99, best.confidence + 0.08)
-        best.evidence = f"[{len(valid)} sources agree] {best.evidence or ''}"
+        agreeing_sources = _format_source_list([point.source for point in valid])
+        best.evidence = f"Confirmed by {len(set(point.source for point in valid))} source types ({agreeing_sources}). {best.evidence or ''}".strip()
         return best
     else:
         # Conflict — use tier-1 source, penalize confidence
         best = valid[0]
         best.confidence *= 0.70
-        conflicting_sources = [c.source for c in valid[1:] if _normalize_for_comparison(c.value) != normalized[0]]
-        best.evidence = f"[CONFLICT with {', '.join(conflicting_sources)}] {best.evidence or ''}"
+        conflicting_sources = _format_source_list([c.source for c in valid[1:] if _normalize_for_comparison(c.value) != normalized[0]])
+        if conflicting_sources:
+            best.evidence = f"Source disagreement with {conflicting_sources}. Using {best.source}. {best.evidence or ''}".strip()
         logger.debug(f"Cross-validation conflict for {field_name}: {[c.value for c in valid]}")
         return best
 
@@ -114,6 +123,10 @@ def _classify_field(point: DataPoint) -> Optional[str]:
         return "customer_count"
     if any(kw in evidence for kw in ["headers", "tech", "vercel", "cloudflare", "server"]):
         return "tech_stack"
+    if any(kw in evidence for kw in ["telephone", "phone", "tel link", "contactpoint telephone"]):
+        return "company_phone"
+    if "linkedin" in evidence:
+        return "linkedin_url"
     if any(kw in evidence for kw in ["description", "summary", "og:description"]):
         return "company_description"
     if any(kw in evidence for kw in ["@type=", "site_name", "og:site_name"]):

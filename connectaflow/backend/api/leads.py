@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
+from sqlalchemy import func, or_
 
 from api.deps import get_workspace_id
 from database import get_session
@@ -67,6 +68,8 @@ async def get_leads(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     status: Optional[str] = None,
+    q: Optional[str] = None,
+    enriched_only: bool = False,
     session: Session = Depends(get_session),
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
@@ -74,24 +77,47 @@ async def get_leads(
     query = select(Lead).where(Lead.workspace_id == workspace_id)
     if status:
         query = query.where(Lead.status == status)
+    if enriched_only:
+        query = query.where(Lead.domain.is_not(None))
+    if q:
+        pattern = f"%{q.strip().lower()}%"
+        query = query.where(or_(
+            func.lower(func.coalesce(Lead.email, "")).like(pattern),
+            func.lower(func.coalesce(Lead.first_name, "")).like(pattern),
+            func.lower(func.coalesce(Lead.last_name, "")).like(pattern),
+            func.lower(func.coalesce(Lead.domain, "")).like(pattern),
+            func.lower(func.coalesce(Lead.status, "")).like(pattern),
+        ))
+    query = query.order_by(Lead.updated_at.desc(), Lead.created_at.desc())
     query = query.offset(skip).limit(limit)
     leads = session.exec(query).all()
 
-    # Get total count
-    total_query = select(Lead).where(Lead.workspace_id == workspace_id)
+    total_query = select(func.count()).select_from(Lead).where(Lead.workspace_id == workspace_id)
     if status:
         total_query = total_query.where(Lead.status == status)
-    total = len(session.exec(total_query).all())
+    if enriched_only:
+        total_query = total_query.where(Lead.domain.is_not(None))
+    if q:
+        pattern = f"%{q.strip().lower()}%"
+        total_query = total_query.where(or_(
+            func.lower(func.coalesce(Lead.email, "")).like(pattern),
+            func.lower(func.coalesce(Lead.first_name, "")).like(pattern),
+            func.lower(func.coalesce(Lead.last_name, "")).like(pattern),
+            func.lower(func.coalesce(Lead.domain, "")).like(pattern),
+            func.lower(func.coalesce(Lead.status, "")).like(pattern),
+        ))
+    total = session.exec(total_query).one()
 
     # Enrich with company profile data if available
     results = []
     for lead in leads:
         lead_dict = lead.model_dump()
         if lead.domain:
-            profile = session.get(CompanyProfile, lead.domain)
-            if profile:
-                if profile.workspace_id != workspace_id:
-                    profile = None
+            profile = session.exec(
+                select(CompanyProfile)
+                .where(CompanyProfile.domain == lead.domain)
+                .where(CompanyProfile.workspace_id == workspace_id)
+            ).first()
             if profile:
                 lead_dict["company_profile"] = {
                     "name": profile.name,
@@ -99,6 +125,8 @@ async def get_leads(
                     "quality_tier": profile.quality_tier,
                     "enriched_data": profile.enriched_data,
                     "sources_used": profile.sources_used,
+                    "enriched_at": str(profile.enriched_at) if profile.enriched_at else None,
+                    "fetch_metadata": profile.fetch_metadata,
                 }
         results.append(lead_dict)
 
@@ -140,10 +168,11 @@ async def get_lead(
 
     result = lead.model_dump()
     if lead.domain:
-        profile = session.get(CompanyProfile, lead.domain)
-        if profile:
-            if profile.workspace_id != workspace_id:
-                profile = None
+        profile = session.exec(
+            select(CompanyProfile)
+            .where(CompanyProfile.domain == lead.domain)
+            .where(CompanyProfile.workspace_id == workspace_id)
+        ).first()
         if profile:
             result["company_profile"] = {
                 "name": profile.name,
