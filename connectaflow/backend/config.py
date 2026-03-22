@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     ENRICHMENT_CACHE_TTL_DAYS: int = 30
     LLM_MAX_RETRIES: int = 3
     COMMONCRAWL_INDEX: str = "CC-MAIN-2025-08"
+    SMARTLEAD_API_KEY: Optional[str] = None
+    SMARTLEAD_BASE_URL: str = "https://server.smartlead.ai/api/v1"
+    EXTERNAL_SIGNAL_DISCOVERY_INTERVAL_HOURS: int = 6
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

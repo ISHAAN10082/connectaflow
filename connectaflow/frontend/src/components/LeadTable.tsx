@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react
 import { useSearchParams } from 'next/navigation';
 import {
     Search, RefreshCw, Loader2, ChevronLeft, ChevronRight,
-    Building2, Database, Save, ExternalLink
+    Building2, Database, Save, ExternalLink, Snowflake, CalendarClock
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -12,9 +12,14 @@ import {
     getLeads,
     updateLead,
     updateProfile,
+    generateMeetingBrief,
+    getMeetingBrief,
+    applyCooldown,
+    removeCooldown,
     type DataPoint,
     type DataValue,
     type Lead,
+    type MeetingBrief,
 } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 import { isHttpUrl, isTelValue } from '../lib/links';
@@ -28,7 +33,7 @@ const QUALITY_DOT: Record<string, string> = {
     pending: 'bg-slate-600',
 };
 
-const STATUS_OPTIONS = ['New', 'Contacted', 'Qualified', 'Closed'];
+const STATUS_OPTIONS = ['Not Contacted', 'Contacted', 'Replied', 'Meeting Booked', 'Cool Down'];
 
 const PROFILE_FIELDS: { key: string; label: string; multiline?: boolean; numeric?: boolean }[] = [
     { key: 'company_name', label: 'Company Name' },
@@ -50,6 +55,7 @@ type LeadDraft = {
     domain: string;
     status: string;
     notes: string;
+    follow_up_date: string;
 };
 
 type ProfileDraft = Record<string, string>;
@@ -87,8 +93,9 @@ function makeLeadDraft(lead: Lead): LeadDraft {
         last_name: lead.last_name || '',
         email: lead.email || '',
         domain: lead.domain || '',
-        status: lead.status || 'New',
+        status: lead.status || 'Not Contacted',
         notes: typeof lead.custom_data?.notes === 'string' ? lead.custom_data.notes : '',
+        follow_up_date: lead.follow_up_date ? lead.follow_up_date.slice(0, 10) : '',
     };
 }
 
@@ -122,6 +129,10 @@ export function LeadTable() {
     const [profileDraft, setProfileDraft] = useState<ProfileDraft>({});
     const [savingLead, setSavingLead] = useState(false);
     const [savingProfile, setSavingProfile] = useState(false);
+    const [meetingBrief, setMeetingBrief] = useState<MeetingBrief | null>(null);
+    const [generatingBrief, setGeneratingBrief] = useState(false);
+    const [showBriefPanel, setShowBriefPanel] = useState(false);
+    const [cooldownLoading, setCooldownLoading] = useState(false);
 
     const loadLeads = useCallback(async (skip = 0) => {
         setLoading(true);
@@ -213,6 +224,7 @@ export function LeadTable() {
     const handleSaveLead = async () => {
         if (!selectedLead || !leadDraft) return;
         setSavingLead(true);
+        const prevStatus = selectedLead.status;
         try {
             const nextCustomData = {
                 ...(selectedLead.custom_data || {}),
@@ -225,11 +237,29 @@ export function LeadTable() {
                 domain: leadDraft.domain || null,
                 status: leadDraft.status,
                 custom_data: nextCustomData,
+                follow_up_date: leadDraft.follow_up_date || null,
             });
             toast.success('Lead updated');
             setSelectedLead((current) => current ? { ...current, ...data, custom_data: nextCustomData } : data);
             await loadLeads(page * PAGE_SIZE);
             await loadLeadDetail(selectedLead.id);
+
+            // Auto-generate meeting brief when status transitions to "Meeting Booked"
+            if (leadDraft.status === 'Meeting Booked' && prevStatus !== 'Meeting Booked') {
+                setGeneratingBrief(true);
+                try {
+                    await generateMeetingBrief(selectedLead.id);
+                    // getMeetingBrief to get the full record with id/generated_at
+                    const { data: fullBrief } = await getMeetingBrief(selectedLead.id);
+                    setMeetingBrief(fullBrief);
+                    setShowBriefPanel(true);
+                    toast.success('Meeting brief generated!');
+                } catch {
+                    toast.error('Brief generation failed — you can retry from the lead panel');
+                } finally {
+                    setGeneratingBrief(false);
+                }
+            }
         } catch (err: unknown) {
             toast.error(getErrorMessage(err, 'Failed to save lead'));
         } finally {
@@ -284,6 +314,36 @@ export function LeadTable() {
             toast.error(getErrorMessage(err, 'Failed to save company profile'));
         } finally {
             setSavingProfile(false);
+        }
+    };
+
+    const handleApplyCooldown = async () => {
+        if (!selectedLead) return;
+        setCooldownLoading(true);
+        try {
+            await applyCooldown(selectedLead.id, 6);
+            toast.success('Lead placed in cool-down for 6 months');
+            await loadLeads(page * PAGE_SIZE);
+            await loadLeadDetail(selectedLead.id);
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to apply cool-down'));
+        } finally {
+            setCooldownLoading(false);
+        }
+    };
+
+    const handleRemoveCooldown = async () => {
+        if (!selectedLead) return;
+        setCooldownLoading(true);
+        try {
+            await removeCooldown(selectedLead.id);
+            toast.success('Cool-down removed');
+            await loadLeads(page * PAGE_SIZE);
+            await loadLeadDetail(selectedLead.id);
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to remove cool-down'));
+        } finally {
+            setCooldownLoading(false);
         }
     };
 
@@ -372,19 +432,48 @@ export function LeadTable() {
                                         </td>
                                         <td className="px-4 py-3 align-top">
                                             {profile ? (
-                                                <div className="flex items-center gap-2">
-                                                    <div className={`h-2 w-2 rounded-full ${QUALITY_DOT[qualityTier] || 'bg-slate-600'}`} />
-                                                    <span className="text-xs capitalize text-slate-300">{qualityTier}</span>
-                                                    <span className="text-xs font-mono text-slate-500">{((profile.quality_score || 0) * 100).toFixed(0)}%</span>
+                                                <div className="flex flex-col gap-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className={`h-2 w-2 rounded-full ${QUALITY_DOT[qualityTier] || 'bg-slate-600'}`} />
+                                                        <span className="text-xs capitalize text-slate-300">{qualityTier}</span>
+                                                        <span className="text-xs font-mono text-slate-500">{((profile.quality_score || 0) * 100).toFixed(0)}%</span>
+                                                    </div>
+                                                    {lead.icp_tier && (
+                                                        <span className={`self-start rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                                            lead.icp_tier === 'T1' ? 'bg-emerald-500/20 text-emerald-400' :
+                                                            lead.icp_tier === 'T2' ? 'bg-amber-500/20 text-amber-400' :
+                                                            'bg-slate-500/20 text-slate-400'
+                                                        }`}>{lead.icp_tier}</span>
+                                                    )}
                                                 </div>
                                             ) : (
                                                 <span className="text-xs text-slate-600">No profile</span>
                                             )}
                                         </td>
                                         <td className="px-4 py-3 align-top">
-                                            <span className="rounded-lg bg-slate-500/10 px-2 py-1 text-xs font-semibold text-slate-300">
-                                                {lead.status}
-                                            </span>
+                                            <div className="flex flex-col gap-1">
+                                                <span className={`rounded-lg px-2 py-1 text-xs font-semibold ${
+                                                    lead.status === 'Meeting Booked' ? 'bg-emerald-500/15 text-emerald-300' :
+                                                    lead.status === 'Cool Down' ? 'bg-blue-500/15 text-blue-300' :
+                                                    lead.status === 'Replied' ? 'bg-purple-500/15 text-purple-300' :
+                                                    lead.status === 'Contacted' ? 'bg-cyan-500/15 text-cyan-300' :
+                                                    'bg-slate-500/10 text-slate-300'
+                                                }`}>
+                                                    {lead.status === 'Cool Down' && <Snowflake className="inline w-3 h-3 mr-1" />}
+                                                    {lead.status}
+                                                </span>
+                                                {lead.follow_up_date && (() => {
+                                                    const due = new Date(lead.follow_up_date);
+                                                    const today = new Date();
+                                                    const isDue = due <= today;
+                                                    return (
+                                                        <span className={`text-[10px] flex items-center gap-1 ${isDue ? 'text-amber-400' : 'text-slate-500'}`}>
+                                                            <CalendarClock className="w-3 h-3" />
+                                                            {isDue ? 'Due ' : ''}{due.toLocaleDateString()}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3 align-top text-xs text-slate-500">
                                             {new Date(lead.updated_at).toLocaleDateString()}
@@ -465,18 +554,134 @@ export function LeadTable() {
                                     <Field label="Notes">
                                         <textarea value={leadDraft.notes} onChange={(event) => setLeadDraft({ ...leadDraft, notes: event.target.value })} rows={3} className={TEXTAREA_CLASS} />
                                     </Field>
+                                    <Field label="Follow-up Date">
+                                        <input
+                                            type="date"
+                                            value={leadDraft.follow_up_date}
+                                            onChange={(event) => setLeadDraft({ ...leadDraft, follow_up_date: event.target.value })}
+                                            className={INPUT_CLASS}
+                                        />
+                                    </Field>
                                 </div>
-                                <button
-                                    onClick={() => void handleSaveLead()}
-                                    disabled={savingLead}
-                                    className="inline-flex items-center gap-2 rounded-xl bg-cyan-500/15 px-4 py-2.5 text-sm font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
-                                >
-                                    {savingLead ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                                    Save Lead
-                                </button>
+                                {/* ICP Tier badge */}
+                                {selectedLead.icp_tier && (
+                                    <div className="flex items-center gap-2">
+                                        <span className={`rounded px-2 py-1 text-xs font-bold ${
+                                            selectedLead.icp_tier === 'T1' ? 'bg-emerald-500/20 text-emerald-400' :
+                                            selectedLead.icp_tier === 'T2' ? 'bg-amber-500/20 text-amber-400' :
+                                            'bg-slate-500/20 text-slate-400'
+                                        }`}>{selectedLead.icp_tier}</span>
+                                        <span className="text-xs text-slate-400">ICP Tier</span>
+                                        {selectedLead.icp_final_score != null && (
+                                            <span className="text-xs text-slate-500">Score: {(selectedLead.icp_final_score).toFixed(1)}</span>
+                                        )}
+                                    </div>
+                                )}
+                                {/* Cooldown status */}
+                                {selectedLead.status === 'Cool Down' && selectedLead.cooldown_until && (
+                                    <div className="rounded-xl border border-blue-500/20 bg-blue-500/8 p-3 flex items-center justify-between">
+                                        <div>
+                                            <p className="text-xs font-semibold text-blue-300 flex items-center gap-1">
+                                                <Snowflake className="w-3 h-3" /> In Cool-Down
+                                            </p>
+                                            <p className="text-xs text-slate-400 mt-0.5">
+                                                Until {new Date(selectedLead.cooldown_until).toLocaleDateString()}
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => void handleRemoveCooldown()}
+                                            disabled={cooldownLoading}
+                                            className="text-xs px-2 py-1 rounded-lg bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
+                                        >
+                                            {cooldownLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Lift Cool-Down'}
+                                        </button>
+                                    </div>
+                                )}
+                                {/* Meeting Brief trigger hint */}
+                                {leadDraft.status === 'Meeting Booked' && (
+                                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/8 p-3 text-xs text-emerald-300">
+                                        {generatingBrief ? (
+                                            <span className="flex items-center gap-2"><RefreshCw className="w-3 h-3 animate-spin" /> Generating meeting brief…</span>
+                                        ) : showBriefPanel && meetingBrief ? (
+                                            <button onClick={() => setShowBriefPanel(true)} className="underline">View meeting brief ↓</button>
+                                        ) : (
+                                            <span>Save to auto-generate a meeting brief.</span>
+                                        )}
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        onClick={() => void handleSaveLead()}
+                                        disabled={savingLead}
+                                        className="inline-flex items-center gap-2 rounded-xl bg-cyan-500/15 px-4 py-2.5 text-sm font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
+                                    >
+                                        {savingLead ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                        Save Lead
+                                    </button>
+                                    {selectedLead.status !== 'Cool Down' && (
+                                        <button
+                                            onClick={() => void handleApplyCooldown()}
+                                            disabled={cooldownLoading}
+                                            className="inline-flex items-center gap-2 rounded-xl bg-blue-500/10 px-4 py-2.5 text-sm font-semibold text-blue-300 transition-colors hover:bg-blue-500/20 disabled:opacity-50"
+                                        >
+                                            {cooldownLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Snowflake className="w-4 h-4" />}
+                                            Cool Down
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
+
+                    {/* Meeting Brief Panel */}
+                    {showBriefPanel && meetingBrief && (
+                        <div className="rounded-2xl border border-emerald-500/20 bg-[#131A2E] p-5">
+                            <div className="flex items-center justify-between mb-3">
+                                <p className="text-sm font-bold text-white">Meeting Brief</p>
+                                <button onClick={() => setShowBriefPanel(false)} className="text-slate-500 hover:text-white text-xs">Hide</button>
+                            </div>
+                            <div className="space-y-3 text-xs">
+                                <div>
+                                    <p className="text-[11px] uppercase text-slate-500 mb-1">Company Overview</p>
+                                    <p className="text-slate-300">{meetingBrief.content_json.company_overview}</p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-emerald-400 font-semibold">ICP {meetingBrief.content_json.icp_tier || 'N/A'}</span>
+                                    <span className="text-slate-300">Score: {meetingBrief.content_json.icp_fit_score}%</span>
+                                </div>
+                                {meetingBrief.content_json.key_talking_points?.length > 0 && (
+                                    <div>
+                                        <p className="text-[11px] uppercase text-slate-500 mb-1">Key Talking Points</p>
+                                        <ul className="space-y-1">
+                                            {meetingBrief.content_json.key_talking_points.map((pt, i) => (
+                                                <li key={i} className="text-slate-300">• {pt}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                                {meetingBrief.content_json.likely_objections?.length > 0 && (
+                                    <div>
+                                        <p className="text-[11px] uppercase text-slate-500 mb-1">Likely Objections</p>
+                                        <ul className="space-y-1">
+                                            {meetingBrief.content_json.likely_objections.map((obj, i) => (
+                                                <li key={i} className="text-amber-300">⚠ {obj}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                                {meetingBrief.content_json.suggested_questions?.length > 0 && (
+                                    <div>
+                                        <p className="text-[11px] uppercase text-slate-500 mb-1">Suggested Questions</p>
+                                        <ul className="space-y-1">
+                                            {meetingBrief.content_json.suggested_questions.map((q, i) => (
+                                                <li key={i} className="text-cyan-300">? {q}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     <div className="rounded-2xl border border-slate-800/60 bg-[#131A2E] p-5 max-h-[52vh] overflow-y-auto">
                         <div className="mb-4 flex items-start justify-between gap-3">
@@ -512,6 +717,23 @@ export function LeadTable() {
                                             </span>
                                         </p>
                                     </div>
+                                    {selectedLead.icp_tier && (
+                                        <div className="rounded-xl bg-[#0E1528] px-3 py-2">
+                                            <p className="text-[11px] uppercase tracking-wider text-slate-500">ICP Tier</p>
+                                            <p className={`text-sm font-bold ${
+                                                selectedLead.icp_tier === 'T1' ? 'text-emerald-400' :
+                                                selectedLead.icp_tier === 'T2' ? 'text-amber-400' :
+                                                'text-slate-400'
+                                            }`}>
+                                                {selectedLead.icp_tier}
+                                                {selectedLead.icp_final_score != null && (
+                                                    <span className="ml-1 text-slate-500 text-xs font-normal">
+                                                        {(selectedLead.icp_final_score).toFixed(1)}
+                                                    </span>
+                                                )}
+                                            </p>
+                                        </div>
+                                    )}
                                     <div className="rounded-xl bg-[#0E1528] px-3 py-2">
                                         <p className="text-[11px] uppercase tracking-wider text-slate-500">Sources</p>
                                         <p className="max-w-[320px] max-h-14 overflow-y-auto text-xs text-slate-300 break-words">

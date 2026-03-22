@@ -19,6 +19,7 @@ from models import (
     GTMContextCreate, GTMContextUpdate, PersonaCreate,
     BuyingTriggerCreate, SignalDefinitionCreate, GTMPlayCreate,
     ICPDefinition, MotionIntent,
+    ICP, ICPCreate, ICPUpdate,
 )
 from datetime import datetime
 
@@ -246,7 +247,9 @@ def create_persona(
     ctx = session.get(GTMContext, ctx_id)
     if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
-    p = Persona(gtm_context_id=ctx_id, workspace_id=workspace_id, **data.model_dump())
+    persona_data = data.model_dump(exclude={"icp_id"})
+    icp_id = uuid.UUID(data.icp_id) if data.icp_id else None
+    p = Persona(gtm_context_id=ctx_id, workspace_id=workspace_id, icp_id=icp_id, **persona_data)
     session.add(p)
     session.commit()
     session.refresh(p)
@@ -986,6 +989,157 @@ Be specific and data-driven. Reference actual companies from the data. Return ON
         "analysis": analysis,
     }
 # ─── Company Context Parsing ────────────────────────────────
+
+# ── ICP CRUD (linked to Mission / GTMContext) ─────────────────────────────────
+
+@router.get("/{ctx_id}/icps", response_model=dict)
+def list_icps_for_mission(
+    ctx_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """List all ICPs linked to a mission (GTMContext)."""
+    ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
+    icps = session.exec(
+        select(ICP)
+        .where(ICP.mission_id == ctx.id)
+        .where(ICP.workspace_id == workspace_id)
+        .order_by(ICP.created_at.asc())  # type: ignore
+    ).all()
+    return {"icps": [_serialize_icp(icp) for icp in icps], "total": len(icps)}
+
+
+@router.post("/{ctx_id}/icps", response_model=dict)
+def create_icp_for_mission(
+    ctx_id: str,
+    payload: ICPCreate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Create a new ICP linked to a mission."""
+    ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
+    icp = ICP(
+        workspace_id=workspace_id,
+        mission_id=ctx.id,
+        name=payload.name,
+        industry=payload.industry or [],
+        company_size=payload.company_size or {},
+        geography=payload.geography or [],
+        use_cases=payload.use_cases or [],
+        firmographic_range=payload.firmographic_range or {},
+        icp_statement=payload.icp_statement or "",
+        icp_priority=payload.icp_priority or "Primary",
+        list_sourcing_guidance=payload.list_sourcing_guidance or "",
+        icp_rationale=payload.icp_rationale or "",
+    )
+    session.add(icp)
+    session.commit()
+    session.refresh(icp)
+    return _serialize_icp(icp)
+
+
+@router.get("/{ctx_id}/icps/{icp_id}", response_model=dict)
+def get_icp_for_mission(
+    ctx_id: str,
+    icp_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Get a single ICP."""
+    _get_ctx_or_404(ctx_id, workspace_id, session)
+    icp = _get_icp_or_404(icp_id, workspace_id, session)
+    return _serialize_icp(icp)
+
+
+@router.patch("/{ctx_id}/icps/{icp_id}", response_model=dict)
+def update_icp_for_mission(
+    ctx_id: str,
+    icp_id: str,
+    payload: ICPUpdate,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Update an ICP."""
+    _get_ctx_or_404(ctx_id, workspace_id, session)
+    icp = _get_icp_or_404(icp_id, workspace_id, session)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(icp, field, value)
+    session.add(icp)
+    session.commit()
+    session.refresh(icp)
+    return _serialize_icp(icp)
+
+
+@router.delete("/{ctx_id}/icps/{icp_id}", response_model=dict)
+def delete_icp_for_mission(
+    ctx_id: str,
+    icp_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Delete an ICP."""
+    _get_ctx_or_404(ctx_id, workspace_id, session)
+    icp = _get_icp_or_404(icp_id, workspace_id, session)
+    session.delete(icp)
+    session.commit()
+    return {"deleted": True}
+
+
+# ── ICP helpers ────────────────────────────────────────────────────────────────
+
+def _get_ctx_or_404(ctx_id: str, workspace_id: uuid.UUID, session: Session) -> GTMContext:
+    ctx = session.exec(
+        select(GTMContext)
+        .where(GTMContext.id == uuid.UUID(ctx_id))
+        .where(GTMContext.workspace_id == workspace_id)
+    ).first()
+    if not ctx:
+        raise HTTPException(status_code=404, detail="GTM context not found")
+    return ctx
+
+
+def _get_icp_or_404(icp_id: str, workspace_id: uuid.UUID, session: Session) -> ICP:
+    icp = session.exec(
+        select(ICP)
+        .where(ICP.id == uuid.UUID(icp_id))
+        .where(ICP.workspace_id == workspace_id)
+    ).first()
+    if not icp:
+        raise HTTPException(status_code=404, detail="ICP not found")
+    return icp
+
+
+def _serialize_icp(icp: ICP) -> dict:
+    return {
+        "id": str(icp.id),
+        "workspace_id": str(icp.workspace_id),
+        "mission_id": str(icp.mission_id),
+        "name": icp.name,
+        "industry": icp.industry,
+        "company_size": icp.company_size,
+        "geography": icp.geography,
+        "use_cases": icp.use_cases,
+        "firmographic_range": icp.firmographic_range,
+        "icp_statement": icp.icp_statement,
+        "icp_priority": icp.icp_priority,
+        "list_sourcing_guidance": icp.list_sourcing_guidance,
+        "icp_rationale": icp.icp_rationale,
+        "created_at": icp.created_at.isoformat(),
+    }
+
+
+# ── context route helper (referenced in ICP CRUD above) ───────────────────────
+
+def _get_context_for_workspace(ctx_id: str, workspace_id: uuid.UUID, session: Session) -> GTMContext:
+    ctx = session.exec(
+        select(GTMContext)
+        .where(GTMContext.id == uuid.UUID(ctx_id))
+        .where(GTMContext.workspace_id == workspace_id)
+    ).first()
+    if not ctx:
+        raise HTTPException(status_code=404, detail="GTM context not found")
+    return ctx
+
 
 @router.post("/context/parse")
 async def parse_context_files(

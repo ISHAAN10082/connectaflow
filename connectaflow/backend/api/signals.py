@@ -1,16 +1,19 @@
 """
 Signals API: warm signal queue ranked by ICP × Signal × Recency.
 """
+import io
+import csv
 import math
 import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from api.deps import get_workspace_id
 from database import get_session
-from models import Signal, CompanyProfile, ICPScore
+from models import Signal, CompanyProfile, ICPScore, ExternalSignal
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
@@ -191,3 +194,117 @@ async def list_all_signals(
 
     signals = session.exec(query).all()
     return {"signals": signals, "total": len(signals)}
+
+
+# ── External Signals ──────────────────────────────────────────────────────────
+
+@router.get("/external", response_model=dict)
+def list_external_signals(
+    status: Optional[str] = None,
+    icp_id: Optional[str] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """
+    List external signals discovered by the background discovery job.
+    Filtered by status (new | dismissed | added) and optionally matched ICP.
+    """
+    q = select(ExternalSignal).where(ExternalSignal.workspace_id == workspace_id)
+    if status:
+        q = q.where(ExternalSignal.status == status.lower())
+    if icp_id:
+        q = q.where(ExternalSignal.matched_icp_id == uuid.UUID(icp_id))
+
+    total = len(session.exec(q).all())
+    signals = session.exec(
+        q.order_by(ExternalSignal.discovered_at.desc())  # type: ignore
+        .offset(skip)
+        .limit(limit)
+    ).all()
+    return {
+        "signals": [_ext_signal_dict(s) for s in signals],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+@router.patch("/external/{signal_id}", response_model=dict)
+def update_external_signal(
+    signal_id: str,
+    status: str,  # new | dismissed | added
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Update the status of an external signal (dismiss or mark as added)."""
+    signal = session.exec(
+        select(ExternalSignal)
+        .where(ExternalSignal.id == uuid.UUID(signal_id))
+        .where(ExternalSignal.workspace_id == workspace_id)
+    ).first()
+    if not signal:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="External signal not found")
+    allowed = {"new", "dismissed", "added"}
+    if status.lower() not in allowed:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
+    signal.status = status.lower()
+    session.add(signal)
+    session.commit()
+    session.refresh(signal)
+    return _ext_signal_dict(signal)
+
+
+@router.get("/external/download")
+def download_external_signals(
+    status: Optional[str] = None,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Download external signals as CSV."""
+    q = select(ExternalSignal).where(ExternalSignal.workspace_id == workspace_id)
+    if status:
+        q = q.where(ExternalSignal.status == status.lower())
+    signals = session.exec(q.order_by(ExternalSignal.discovered_at.desc())).all()  # type: ignore
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "domain", "company_name", "signal_type", "strength",
+        "relevance", "confidence", "evidence", "source_url",
+        "matched_icp_id", "status", "discovered_at",
+    ])
+    for s in signals:
+        writer.writerow([
+            s.domain, s.company_name or "", s.signal_type,
+            round(s.strength, 3), round(s.relevance, 3), round(s.confidence, 3),
+            s.evidence or "", s.source_url or "",
+            str(s.matched_icp_id) if s.matched_icp_id else "",
+            s.status, s.discovered_at.isoformat(),
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=external_signals.csv"},
+    )
+
+
+def _ext_signal_dict(s: ExternalSignal) -> dict:
+    return {
+        "id": str(s.id),
+        "domain": s.domain,
+        "company_name": s.company_name,
+        "signal_type": s.signal_type,
+        "strength": round(s.strength, 3),
+        "relevance": round(s.relevance, 3),
+        "confidence": round(s.confidence, 3),
+        "evidence": s.evidence,
+        "source_url": s.source_url,
+        "matched_icp_id": str(s.matched_icp_id) if s.matched_icp_id else None,
+        "status": s.status,
+        "discovered_at": s.discovered_at.isoformat(),
+    }

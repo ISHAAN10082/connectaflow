@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Radio, Zap, TrendingUp, AlertTriangle, Clock, ExternalLink, RefreshCw, Loader2, Search, ShieldAlert, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Radio, Zap, TrendingUp, AlertTriangle, Clock, ExternalLink, RefreshCw, Loader2, Search, ShieldAlert, ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { getSignalQueue, type SignalQueueItem } from '../services/api';
+import { getSignalQueue, listExternalSignals, updateExternalSignal, downloadExternalSignalsCSV, type SignalQueueItem, type ExternalSignal } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 
 interface Props {
@@ -25,12 +25,16 @@ const SIGNAL_CONFIG: Record<string, { label: string; color: string; bg: string; 
 const PAGE_SIZE = 40;
 
 export function SignalQueue({ icpId }: Props) {
+    const [activeTab, setActiveTab] = useState<'internal' | 'external'>('internal');
     const [queue, setQueue] = useState<SignalQueueItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [total, setTotal] = useState(0);
     const [query, setQuery] = useState('');
     const [page, setPage] = useState(0);
     const [summaryCounts, setSummaryCounts] = useState({ act_now: 0, work_soon: 0, review_first: 0 });
+    const [externalSignals, setExternalSignals] = useState<ExternalSignal[]>([]);
+    const [externalTotal, setExternalTotal] = useState(0);
+    const [externalLoading, setExternalLoading] = useState(false);
 
     const loadQueue = useCallback(async () => {
         setLoading(true);
@@ -46,7 +50,48 @@ export function SignalQueue({ icpId }: Props) {
         }
     }, [icpId, page, query]);
 
+    const loadExternalSignals = useCallback(async () => {
+        setExternalLoading(true);
+        try {
+            const { data } = await listExternalSignals({ status: 'new', limit: 50 });
+            setExternalSignals(data.signals || []);
+            setExternalTotal(data.total || 0);
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, 'Failed to load external signals'));
+        } finally {
+            setExternalLoading(false);
+        }
+    }, []);
+
     useEffect(() => { loadQueue(); }, [loadQueue]);
+
+    useEffect(() => {
+        if (activeTab === 'external') {
+            void loadExternalSignals();
+        }
+    }, [activeTab, loadExternalSignals]);
+
+    const handleDismissExternal = async (id: string) => {
+        try {
+            await updateExternalSignal(id, 'dismissed');
+            setExternalSignals((prev) => prev.filter((s) => s.id !== id));
+            toast.success('Signal dismissed');
+        } catch {
+            toast.error('Failed to dismiss signal');
+        }
+    };
+
+    const handleAddExternal = async (id: string) => {
+        try {
+            await updateExternalSignal(id, 'added');
+            setExternalSignals((prev) => prev.map((s) =>
+                s.id === id ? { ...s, status: 'added' } : s
+            ));
+            toast.success('Signal added to your system — visible in Internal Signals');
+        } catch {
+            toast.error('Failed to add signal');
+        }
+    };
 
     const queueSections = useMemo(() => {
         const hotNow = queue.filter((item) => item.priority_band === 'act_now');
@@ -89,6 +134,91 @@ export function SignalQueue({ icpId }: Props) {
     return (
         <div className="h-full overflow-y-auto" id="signal-queue">
             <div className="max-w-6xl mx-auto p-8 pb-24">
+                {/* Tab bar: Internal / External */}
+                <div className="flex gap-2 mb-6">
+                    <button
+                        onClick={() => setActiveTab('internal')}
+                        className={`rounded-xl border px-4 py-2 text-sm font-semibold transition-all ${activeTab === 'internal' ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' : 'border-slate-800/60 text-slate-400 hover:text-white'}`}
+                    >
+                        Internal Signals
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('external')}
+                        className={`rounded-xl border px-4 py-2 text-sm font-semibold transition-all ${activeTab === 'external' ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400' : 'border-slate-800/60 text-slate-400 hover:text-white'}`}
+                    >
+                        External Discovery {externalTotal > 0 && <span className="ml-1 rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-xs">{externalTotal}</span>}
+                    </button>
+                </div>
+
+                {/* External Signals Tab */}
+                {activeTab === 'external' && (
+                    <div>
+                        <div className="flex items-center justify-between mb-4">
+                            <div>
+                                <h2 className="text-lg font-bold text-white">External Signal Discovery</h2>
+                                <p className="text-sm text-slate-400">Domains discovered via background scan matching your ICPs. Runs every 6 hours.</p>
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={() => downloadExternalSignalsCSV('new')} className="flex items-center gap-2 rounded-xl border border-slate-800/60 bg-[#10172B] px-3 py-2 text-sm text-slate-300 hover:text-white">
+                                    <Download className="w-4 h-4" /> Download CSV
+                                </button>
+                                <button onClick={() => void loadExternalSignals()} disabled={externalLoading} className="flex items-center gap-2 rounded-xl border border-slate-800/60 bg-[#10172B] px-3 py-2 text-sm text-slate-300 hover:text-white">
+                                    <RefreshCw className={`w-4 h-4 ${externalLoading ? 'animate-spin' : ''}`} /> Refresh
+                                </button>
+                            </div>
+                        </div>
+                        {externalLoading ? (
+                            <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-cyan-400" /></div>
+                        ) : externalSignals.length === 0 ? (
+                            <div className="rounded-2xl border border-slate-800/60 bg-[#131A2E] p-12 text-center">
+                                <Radio className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+                                <p className="text-slate-400">No external signals yet. Discovery runs every 6 hours.</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {externalSignals.map((sig) => (
+                                    <div key={sig.id} className="rounded-2xl border border-slate-800/60 bg-[#131A2E] p-4 flex items-start gap-4">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className="font-semibold text-white text-sm">{sig.company_name || sig.domain}</span>
+                                                <span className="text-xs text-slate-500">{sig.domain}</span>
+                                                <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-xs text-cyan-400">{sig.signal_type.replace(/_/g, ' ')}</span>
+                                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${sig.strength >= 0.8 ? 'bg-emerald-500/15 text-emerald-400' : sig.strength >= 0.6 ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-500/15 text-slate-400'}`}>
+                                                    {(sig.strength * 100).toFixed(0)}%
+                                                </span>
+                                            </div>
+                                            {sig.evidence && <p className="text-xs text-slate-400 mb-1">{sig.evidence}</p>}
+                                            <p className="text-xs text-slate-600">{new Date(sig.discovered_at).toLocaleDateString()}</p>
+                                        </div>
+                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                            {sig.status !== 'added' ? (
+                                                <button
+                                                    onClick={() => void handleAddExternal(sig.id)}
+                                                    className="rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-400 hover:bg-emerald-500/20 transition-colors font-medium"
+                                                    title="Add to system"
+                                                >
+                                                    + Add
+                                                </button>
+                                            ) : (
+                                                <span className="rounded-xl border border-emerald-700/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-400 font-medium">
+                                                    ✓ Added
+                                                </span>
+                                            )}
+                                            <button onClick={() => void handleDismissExternal(sig.id)} className="rounded-xl border border-slate-800/60 bg-[#0E1528] p-1.5 text-slate-500 hover:text-red-400 transition-colors" title="Dismiss">
+                                                <X className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Internal Signals Tab - existing content below */}
+                {activeTab === 'internal' && (
+                <div>
+
                 {/* Header */}
                 <div className="flex items-center justify-between mb-8">
                     <div className="flex items-center gap-3">
@@ -307,6 +437,8 @@ export function SignalQueue({ icpId }: Props) {
                         )}
                     </div>
                 )}
+                </div>
+                )} {/* end activeTab === 'internal' */}
             </div>
         </div>
     );

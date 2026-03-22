@@ -110,6 +110,7 @@ class ICPScore(SQLModel, table=True):
     score_high: Optional[float] = None
     score_confidence: float = 0.0
     fit_category: str = "unscored"
+    tier: Optional[str] = None  # T1 | T2 | T3 — assigned after batch scoring
     criterion_scores: Dict = Field(default={}, sa_column=Column(JSON))
     missing_fields: List[str] = Field(default=[], sa_column=Column(JSON))
     reasoning: Optional[str] = None
@@ -145,10 +146,13 @@ class Lead(SQLModel, table=True):
     email: str = Field(index=True, unique=True)
     domain: Optional[str] = Field(default=None, index=True)
     company_id: Optional[uuid.UUID] = None
-    status: str = Field(default="New")
+    status: str = Field(default="Not Contacted")
     score: int = Field(default=0)
     enrichment_status: str = Field(default="pending")
     custom_data: Dict = Field(default={}, sa_column=Column(JSON))
+    follow_up_date: Optional[datetime] = None
+    cooldown_until: Optional[datetime] = None
+    contacts_without_reply: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -158,7 +162,7 @@ class LeadCreate(BaseModel):
     last_name: Optional[str] = None
     email: str
     domain: Optional[str] = None
-    status: str = "New"
+    status: str = "Not Contacted"
     custom_data: Dict = {}
 
 
@@ -171,6 +175,9 @@ class LeadUpdate(BaseModel):
     score: Optional[int] = None
     enrichment_status: Optional[str] = None
     custom_data: Optional[Dict] = None
+    follow_up_date: Optional[datetime] = None
+    cooldown_until: Optional[datetime] = None
+    contacts_without_reply: Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -568,6 +575,7 @@ class Persona(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     gtm_context_id: uuid.UUID = Field(index=True)
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)  # FK to icps.id (nullable for migration compat)
     name: str                           # e.g. "The Revenue Leader"
     department: str = ""                # Sales, Marketing, Engineering, etc.
     seniority: str = ""                 # VP, Director, Manager, IC
@@ -738,6 +746,7 @@ class PersonaCreate(BaseModel):
     evaluation_criteria: List[str] = []
     messaging_do: List[str] = []
     messaging_dont: List[str] = []
+    icp_id: Optional[str] = None  # Optional FK to ICP table
 
 class BuyingTriggerCreate(BaseModel):
     name: str
@@ -775,3 +784,291 @@ class GTMPlayCreate(BaseModel):
     success_criteria: str = ""
     email_subject_lines: List[str] = []
     call_talk_track: str = ""
+
+
+# ─────────────────────────────────────────────────────────────
+# ICP (proper per-mission table, replaces embedded GTMContext fields)
+# ─────────────────────────────────────────────────────────────
+
+class ICP(SQLModel, table=True):
+    __tablename__ = "icps"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    mission_id: uuid.UUID = Field(index=True)   # FK to gtm_contexts.id
+    name: str
+    industry: List[str] = Field(default=[], sa_column=Column(JSON))
+    company_size: Dict = Field(default={}, sa_column=Column(JSON))   # {min, max, unit}
+    geography: List[str] = Field(default=[], sa_column=Column(JSON))
+    use_cases: List[str] = Field(default=[], sa_column=Column(JSON))
+    firmographic_range: Dict = Field(default={}, sa_column=Column(JSON))
+    icp_statement: str = ""
+    icp_priority: str = "Primary"   # Primary | Secondary | Experimental
+    list_sourcing_guidance: str = ""
+    icp_rationale: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ICPCreate(BaseModel):
+    name: str
+    industry: List[str] = []
+    company_size: Dict = {}
+    geography: List[str] = []
+    use_cases: List[str] = []
+    firmographic_range: Dict = {}
+    icp_statement: str = ""
+    icp_priority: str = "Primary"
+    list_sourcing_guidance: str = ""
+    icp_rationale: str = ""
+
+
+class ICPUpdate(BaseModel):
+    name: Optional[str] = None
+    industry: Optional[List[str]] = None
+    company_size: Optional[Dict] = None
+    geography: Optional[List[str]] = None
+    use_cases: Optional[List[str]] = None
+    firmographic_range: Optional[Dict] = None
+    icp_statement: Optional[str] = None
+    icp_priority: Optional[str] = None
+    list_sourcing_guidance: Optional[str] = None
+    icp_rationale: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Social Proof Assets
+# ─────────────────────────────────────────────────────────────
+
+class SocialProofAsset(SQLModel, table=True):
+    __tablename__ = "social_proof_assets"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    type: str    # case_study | testimonial | metric
+    title: str
+    content: str
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    persona_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    use_case_tags: List[str] = Field(default=[], sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AssetCreate(BaseModel):
+    type: str
+    title: str
+    content: str
+    icp_id: Optional[str] = None
+    persona_id: Optional[str] = None
+    use_case_tags: List[str] = []
+
+
+class AssetUpdate(BaseModel):
+    type: Optional[str] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+    icp_id: Optional[str] = None
+    persona_id: Optional[str] = None
+    use_case_tags: Optional[List[str]] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Activity — every outreach action
+# ─────────────────────────────────────────────────────────────
+
+class Activity(SQLModel, table=True):
+    __tablename__ = "activities"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_domain: Optional[str] = Field(default=None, index=True)
+    play_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    channel: str   # email | linkedin | call
+    email_variant_id: Optional[uuid.UUID] = Field(default=None)
+    notes: Optional[str] = None
+    occurred_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ActivityCreate(BaseModel):
+    lead_id: Optional[str] = None
+    account_domain: Optional[str] = None
+    play_id: Optional[str] = None
+    channel: str
+    email_variant_id: Optional[str] = None
+    notes: Optional[str] = None
+    occurred_at: Optional[datetime] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Reply — central inbox
+# ─────────────────────────────────────────────────────────────
+
+class Reply(SQLModel, table=True):
+    __tablename__ = "replies"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    activity_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    play_id: Optional[uuid.UUID] = Field(default=None)
+    channel: str   # email | linkedin | call
+    reply_text: str
+    classification: Optional[str] = None   # interested | objection | neutral | ooo
+    sentiment: Optional[str] = None        # positive | negative | neutral
+    source: str = "manual"                 # smartlead | manual_csv | manual_entry
+    received_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ReplyCreate(BaseModel):
+    lead_id: Optional[str] = None
+    activity_id: Optional[str] = None
+    play_id: Optional[str] = None
+    channel: str
+    reply_text: str
+    source: str = "manual_entry"
+    received_at: Optional[datetime] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Messaging Plays (new — separate from execution Playbooks)
+# ─────────────────────────────────────────────────────────────
+
+class MessagingPlay(SQLModel, table=True):
+    __tablename__ = "messaging_plays"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    mission_id: uuid.UUID = Field(index=True)
+    icp_id: Optional[uuid.UUID] = Field(default=None, index=True)   # Optional — persona is mandatory
+    persona_id: uuid.UUID = Field(index=True)                        # Mandatory
+    name: str
+    global_instruction: str = ""
+    status: str = "draft"   # draft | active | archived
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PlayComponent(SQLModel, table=True):
+    __tablename__ = "play_components"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    play_id: uuid.UUID = Field(index=True)
+    component_type: str   # subject|greeting|opener|problem|value_prop|story|cta|closer|variables
+    display_order: int = 0
+
+
+class PlayVariation(SQLModel, table=True):
+    __tablename__ = "play_variations"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    component_id: uuid.UUID = Field(index=True)
+    content: str
+    tone: Optional[str] = None
+    is_selected: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class EmailVariant(SQLModel, table=True):
+    __tablename__ = "email_variants"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    play_id: uuid.UUID = Field(index=True)
+    subject: str
+    body: str
+    style_label: Optional[str] = None
+    smartlead_variant_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MessagingPlayCreate(BaseModel):
+    mission_id: str
+    persona_id: str           # Mandatory
+    icp_id: Optional[str] = None  # Optional
+    name: str
+    global_instruction: str = ""
+
+
+class MessagingPlayUpdate(BaseModel):
+    name: Optional[str] = None
+    global_instruction: Optional[str] = None
+    status: Optional[str] = None
+
+
+class PlayVariationCreate(BaseModel):
+    component_id: str
+    content: str
+    tone: Optional[str] = None
+    is_selected: bool = False
+
+
+class PlayVariationUpdate(BaseModel):
+    content: Optional[str] = None
+    tone: Optional[str] = None
+    is_selected: Optional[bool] = None
+
+
+class GenerateMessagingRequest(BaseModel):
+    instruction: str = ""
+
+
+# ─────────────────────────────────────────────────────────────
+# Meeting Brief
+# ─────────────────────────────────────────────────────────────
+
+class MeetingBrief(SQLModel, table=True):
+    __tablename__ = "meeting_briefs"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_id: uuid.UUID = Field(index=True)
+    content_json: Dict = Field(default={}, sa_column=Column(JSON))
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
+# External Signals
+# ─────────────────────────────────────────────────────────────
+
+class ExternalSignal(SQLModel, table=True):
+    __tablename__ = "external_signals"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    domain: str = Field(index=True)
+    company_name: Optional[str] = None
+    signal_type: str
+    strength: float = 0.0
+    relevance: float = 0.0
+    confidence: float = 0.0
+    evidence: Optional[str] = None
+    source_url: Optional[str] = None
+    matched_icp_id: Optional[uuid.UUID] = None
+    status: str = "new"   # new | dismissed | added
+    discovered_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
+# Smartlead Stats + Manual Activity Log
+# ─────────────────────────────────────────────────────────────
+
+class SmartleadStats(SQLModel, table=True):
+    __tablename__ = "smartlead_stats"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    campaign_id: str = Field(index=True)
+    campaign_name: str
+    emails_sent: int = 0
+    opens: int = 0
+    open_rate: float = 0.0
+    replies: int = 0
+    reply_rate: float = 0.0
+    meetings_booked: int = 0
+    synced_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ManualActivityLog(SQLModel, table=True):
+    __tablename__ = "manual_activity_logs"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_email: Optional[str] = None
+    lead_name: Optional[str] = None
+    company: Optional[str] = None
+    channel: str   # linkedin | call
+    activity_date: datetime = Field(default_factory=datetime.utcnow)
+    status: str = "sent"    # sent | replied | meeting_booked
+    notes: Optional[str] = None
+    call_duration: Optional[int] = None   # seconds, call only
+    uploaded_at: datetime = Field(default_factory=datetime.utcnow)

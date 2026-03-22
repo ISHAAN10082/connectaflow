@@ -76,6 +76,13 @@ export interface Lead {
     created_at: string;
     updated_at: string;
     company_profile?: LeadCompanyProfile;
+    // ICP scoring (populated when domain has been ICP scored)
+    icp_tier?: string | null;
+    icp_final_score?: number | null;
+    // Cooldown / follow-up
+    follow_up_date?: string | null;
+    cooldown_until?: string | null;
+    contacts_without_reply?: number;
 }
 
 export interface ICPDefinition {
@@ -119,6 +126,7 @@ export interface ICPScoreResult {
     quality_score: number;
     criterion_scores: Record<string, number | null>;
     missing_fields: string[];
+    tier?: string | null;
 }
 
 export interface SignalQueueItem {
@@ -474,6 +482,12 @@ export const updateLead = (id: string, data: Partial<Lead>) =>
 export const deleteLead = (id: string) =>
     api.delete(`/leads/${id}`);
 
+export const applyCooldown = (id: string, months = 6) =>
+    api.post<Lead>(`/leads/${id}/cooldown`, { months });
+
+export const removeCooldown = (id: string) =>
+    api.delete<Lead>(`/leads/${id}/cooldown`);
+
 // Enrichment
 export const startBatchEnrichment = (domains: string[], icp_id?: string) =>
     api.post<{ job_id: string; total: number }>('/enrichment/batch', { domains, icp_id });
@@ -727,5 +741,345 @@ export const exportEnrichedCSV = async () => {
     a.click();
     URL.revokeObjectURL(url);
 };
+
+// ─────────────────────────────────────────────────────────────
+// New Module Types
+// ─────────────────────────────────────────────────────────────
+
+// ICP (Plays-linked, per-mission)
+export interface ICP {
+    id: string;
+    workspace_id: string;
+    mission_id: string;
+    name: string;
+    industry: string[];
+    company_size: Record<string, unknown>;
+    geography: string[];
+    use_cases: string[];
+    firmographic_range: Record<string, unknown>;
+    icp_statement: string;
+    icp_priority: string; // Primary | Secondary | Experimental
+    list_sourcing_guidance: string;
+    icp_rationale: string;
+    created_at: string;
+}
+
+// Social Proof Asset
+export interface SocialProofAsset {
+    id: string;
+    workspace_id: string;
+    type: string; // case_study | testimonial | metric
+    title: string;
+    content: string;
+    icp_id: string | null;
+    persona_id: string | null;
+    use_case_tags: string[];
+    created_at: string;
+}
+
+// Reply
+export interface Reply {
+    id: string;
+    workspace_id: string;
+    lead_id: string | null;
+    lead?: { id: string; name: string; email: string; domain: string | null; status: string } | null;
+    activity_id: string | null;
+    play_id: string | null;
+    channel: string; // email | linkedin | call
+    reply_text: string;
+    classification: string | null; // interested | objection | neutral | ooo
+    sentiment: string | null; // positive | negative | neutral
+    source: string; // smartlead | manual_csv | manual_entry
+    received_at: string | null;
+}
+
+// Messaging Play
+export interface MessagingPlay {
+    id: string;
+    mission_id: string;
+    persona_id: string;
+    persona_name: string;
+    icp_id: string | null;
+    icp_name: string;
+    name: string;
+    global_instruction: string;
+    status: string; // draft | active | archived
+    component_count: number;
+    created_at: string;
+    updated_at: string;
+    components?: PlayComponent[];
+    email_variants?: EmailVariant[];
+}
+
+export interface PlayComponent {
+    id: string;
+    component_type: string; // subject | greeting | opener | problem | value_prop | story | cta | closer | variables
+    display_order: number;
+    variations: PlayVariation[];
+}
+
+export interface PlayVariation {
+    id: string;
+    component_id: string;
+    content: string;
+    tone: string | null;
+    is_selected: boolean;
+    created_at: string;
+}
+
+export interface EmailVariant {
+    id: string;
+    play_id: string;
+    subject: string;
+    body: string;
+    style_label: string | null;
+    smartlead_variant_id: string | null;
+    created_at: string;
+}
+
+// Meeting Brief
+export interface MeetingBrief {
+    id: string;
+    lead_id: string;
+    content_json: {
+        company_overview: string;
+        icp_fit_score: number;
+        icp_fit_reason: string;
+        icp_tier: string;
+        active_signals: string[];
+        conversation_history: string;
+        key_talking_points: string[];
+        likely_objections: string[];
+        suggested_questions: string[];
+    };
+    generated_at: string;
+}
+
+// External Signal
+export interface ExternalSignal {
+    id: string;
+    domain: string;
+    company_name: string | null;
+    signal_type: string;
+    strength: number;
+    relevance: number;
+    confidence: number;
+    evidence: string | null;
+    source_url: string | null;
+    matched_icp_id: string | null;
+    status: string; // new | dismissed | added
+    discovered_at: string;
+}
+
+// Smartlead Stats
+export interface SmartleadStats {
+    id: string;
+    campaign_id: string;
+    campaign_name: string;
+    emails_sent: number;
+    opens: number;
+    open_rate: number;
+    replies: number;
+    reply_rate: number;
+    meetings_booked: number;
+    synced_at: string;
+}
+
+// Outcomes
+export interface OutcomesSummary {
+    total_leads: number;
+    contacted: number;
+    replied: number;
+    reply_rate: number;
+    meetings_booked: number;
+    conversion_rate: number;
+}
+
+export interface OutcomesByChannel {
+    email: { attempted: number; replies: number; reply_rate: number; meetings: number; stats?: SmartleadStats[] };
+    linkedin: { attempted: number; replies: number; reply_rate: number; meetings: number };
+    calls: { attempted: number; replies: number; reply_rate: number; meetings: number };
+}
+
+// Copilot
+export interface CopilotResponse {
+    answer: string;
+    context_summary: Record<string, unknown>;
+}
+
+// ─────────────────────────────────────────────────────────────
+// ICP API (Mission-linked ICPs)
+// ─────────────────────────────────────────────────────────────
+
+export const listMissionICPs = (missionId: string) =>
+    api.get<{ icps: ICP[]; total: number }>(`/gtm/${missionId}/icps`);
+
+export const createMissionICP = (missionId: string, data: Partial<ICP>) =>
+    api.post<ICP>(`/gtm/${missionId}/icps`, data);
+
+export const updateMissionICP = (missionId: string, icpId: string, data: Partial<ICP>) =>
+    api.patch<ICP>(`/gtm/${missionId}/icps/${icpId}`, data);
+
+export const deleteMissionICP = (missionId: string, icpId: string) =>
+    api.delete(`/gtm/${missionId}/icps/${icpId}`);
+
+// ─────────────────────────────────────────────────────────────
+// Assets API
+// ─────────────────────────────────────────────────────────────
+
+export const listAssets = (params?: { icp_id?: string; persona_id?: string; type?: string }) =>
+    api.get<{ assets: SocialProofAsset[]; total: number }>('/assets/', { params });
+
+export const createAsset = (data: Partial<SocialProofAsset>) =>
+    api.post<SocialProofAsset>('/assets/', data);
+
+export const updateAsset = (id: string, data: Partial<SocialProofAsset>) =>
+    api.patch<SocialProofAsset>(`/assets/${id}`, data);
+
+export const deleteAsset = (id: string) =>
+    api.delete(`/assets/${id}`);
+
+// ─────────────────────────────────────────────────────────────
+// Replies API
+// ─────────────────────────────────────────────────────────────
+
+export const listReplies = (params?: { lead_id?: string; channel?: string; classification?: string; play_id?: string; skip?: number; limit?: number }) =>
+    api.get<{ replies: Reply[]; total: number; skip: number; limit: number }>('/replies/', { params });
+
+export const createReply = (data: { lead_id?: string; channel: string; reply_text: string; source?: string; play_id?: string; received_at?: string }) =>
+    api.post<Reply>('/replies/', data);
+
+export const deleteReply = (id: string) =>
+    api.delete(`/replies/${id}`);
+
+export const getReplyInsights = () =>
+    api.get<{ sentiment_split: Record<string, number>; top_objections: string[]; total_replies: number }>('/replies/insights/summary');
+
+export const uploadRepliesCSV = (file: File, channel: string = 'email') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<{ created: number; errors: string[] }>(`/replies/upload-csv?channel=${channel}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
+
+// ─────────────────────────────────────────────────────────────
+// Meeting Brief API
+// ─────────────────────────────────────────────────────────────
+
+export const generateMeetingBrief = (leadId: string) =>
+    api.post<MeetingBrief['content_json']>(`/leads/${leadId}/meeting-brief`);
+
+export const getMeetingBrief = (leadId: string) =>
+    api.get<MeetingBrief>(`/leads/${leadId}/meeting-brief`);
+
+// ─────────────────────────────────────────────────────────────
+// Plays Messaging Studio API
+// ─────────────────────────────────────────────────────────────
+
+export const listMessagingPlays = (missionId?: string) =>
+    api.get<{ plays: MessagingPlay[]; total: number }>('/plays-messaging/', { params: missionId ? { mission_id: missionId } : {} });
+
+export const createMessagingPlay = (data: { mission_id: string; persona_id: string; icp_id?: string; name: string; global_instruction?: string }) =>
+    api.post<MessagingPlay>('/plays-messaging/', data);
+
+export const getMessagingPlay = (id: string) =>
+    api.get<MessagingPlay>(`/plays-messaging/${id}`);
+
+export const updateMessagingPlay = (id: string, data: Partial<MessagingPlay>) =>
+    api.patch<MessagingPlay>(`/plays-messaging/${id}`, data);
+
+export const deleteMessagingPlay = (id: string) =>
+    api.delete(`/plays-messaging/${id}`);
+
+export const generateMessagingComponents = (playId: string, instruction?: string) =>
+    api.post<{ play_id: string; components: PlayComponent[] }>(`/plays-messaging/${playId}/generate-messaging`, { instruction: instruction || '' });
+
+export const regenerateMessagingComponents = (playId: string, instruction: string) =>
+    api.post<{ play_id: string; components: PlayComponent[] }>(`/plays-messaging/${playId}/regenerate`, { instruction });
+
+export const generateEmailVariants = (playId: string) =>
+    api.post<{ email_variants: EmailVariant[]; count: number }>(`/plays-messaging/${playId}/generate-emails`);
+
+export const updatePlayVariation = (variationId: string, data: { content?: string; tone?: string; is_selected?: boolean }) =>
+    api.patch<PlayVariation>(`/plays-messaging/variations/${variationId}`, data);
+
+export const addPlayVariation = (data: { component_id: string; content: string; tone?: string; is_selected?: boolean }) =>
+    api.post<PlayVariation>('/plays-messaging/variations', data);
+
+export const deletePlayVariation = (variationId: string) =>
+    api.delete(`/plays-messaging/variations/${variationId}`);
+
+export const listEmailVariants = (playId: string) =>
+    api.get<{ email_variants: EmailVariant[]; count: number }>(`/plays-messaging/${playId}/email-variants`);
+
+// ─────────────────────────────────────────────────────────────
+// Outcomes API
+// ─────────────────────────────────────────────────────────────
+
+export const getOutcomesSummary = () =>
+    api.get<OutcomesSummary>('/outcomes/summary');
+
+export const getOutcomesByChannel = () =>
+    api.get<OutcomesByChannel>('/outcomes/by-channel');
+
+export const getOutcomesByTier = () =>
+    api.get<{ tiers: Array<{ tier: string; total: number; replies: number; reply_rate: number; meetings_booked: number; conversion_rate: number }> }>('/outcomes/by-tier');
+
+export const getOutcomesByPlay = () =>
+    api.get<{ plays: Array<{ play_id: string; play_name: string; replies: number; meetings: number }> }>('/outcomes/by-play');
+
+export const getOutcomesByPersona = () =>
+    api.get<{ personas: Array<{ persona_id: string; persona_name: string; replies: number; meetings: number }> }>('/outcomes/by-persona');
+
+export const syncSmartlead = () =>
+    api.post<{ campaigns_synced: number; stats_upserted: number; replies_created: number; errors: string[] }>('/outcomes/smartlead/sync');
+
+export const getSmartleadStats = () =>
+    api.get<{ stats: SmartleadStats[]; total: number }>('/outcomes/smartlead/stats');
+
+export const uploadLinkedinCSV = (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<{ created: number; errors: string[] }>('/outcomes/upload/linkedin', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
+
+export const uploadCallsCSV = (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<{ created: number; errors: string[] }>('/outcomes/upload/calls', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
+
+export const downloadLinkedinTemplate = () =>
+    window.open(`${API_BASE}/outcomes/templates/linkedin`, '_blank');
+
+export const downloadCallsTemplate = () =>
+    window.open(`${API_BASE}/outcomes/templates/calls`, '_blank');
+
+// ─────────────────────────────────────────────────────────────
+// External Signals API
+// ─────────────────────────────────────────────────────────────
+
+export const listExternalSignals = (params?: { status?: string; icp_id?: string; skip?: number; limit?: number }) =>
+    api.get<{ signals: ExternalSignal[]; total: number; skip: number; limit: number }>('/signals/external', { params });
+
+export const updateExternalSignal = (id: string, status: string) =>
+    api.patch<ExternalSignal>(`/signals/external/${id}`, null, { params: { status } });
+
+export const downloadExternalSignalsCSV = (status?: string) => {
+    const url = status ? `${API_BASE}/signals/external/download?status=${status}` : `${API_BASE}/signals/external/download`;
+    window.open(url, '_blank');
+};
+
+// ─────────────────────────────────────────────────────────────
+// AI Copilot API
+// ─────────────────────────────────────────────────────────────
+
+export const queryCopilot = (query: string) =>
+    api.post<CopilotResponse>('/copilot/query', { query });
 
 export default api;

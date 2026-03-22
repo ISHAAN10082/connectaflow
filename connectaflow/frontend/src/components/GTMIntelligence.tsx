@@ -9,12 +9,14 @@ import { toast } from 'sonner';
 import {
     listGTMContexts, createGTMContext, getGTMContext, updateGTMContext, generateGTMStrategy, refineFromEnrichment,
     parseGTMContextFiles, generateICPSuggestions, generateSourcingGuide,
-    type GTMContextSummary, type GTMContextDetail, type ICPSuggestion
+    listMissionICPs, createMissionICP, updateMissionICP, deleteMissionICP,
+    listAssets, createAsset, deleteAsset,
+    type GTMContextSummary, type GTMContextDetail, type ICPSuggestion, type ICP, type SocialProofAsset
 } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 import { Chip, Enrichment, Overview, Personas, Plays, Signals, Triggers } from './gtm/GTMContextSections';
 
-type TabKey = 'overview' | 'personas' | 'triggers' | 'signals' | 'plays' | 'enrichment';
+type TabKey = 'overview' | 'personas' | 'triggers' | 'signals' | 'plays' | 'enrichment' | 'icps' | 'assets';
 
 interface Props {
     onICPGenerated?: (id: string) => void;
@@ -28,6 +30,19 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
     const [loading, setLoading] = useState(false);
     const [creating, setCreating] = useState(false);
     const [generating, setGenerating] = useState(false);
+    const [missionICPs, setMissionICPs] = useState<ICP[]>([]);
+    const [assets, setAssets] = useState<SocialProofAsset[]>([]);
+    const [icpsLoading, setIcpsLoading] = useState(false);
+    const [assetsLoading, setAssetsLoading] = useState(false);
+    const [showNewICPForm, setShowNewICPForm] = useState(false);
+    const [newICPName, setNewICPName] = useState('');
+    const [newICPStatement, setNewICPStatement] = useState('');
+    const [savingICP, setSavingICP] = useState(false);
+    const [showNewAssetForm, setShowNewAssetForm] = useState(false);
+    const [newAssetTitle, setNewAssetTitle] = useState('');
+    const [newAssetType, setNewAssetType] = useState('case_study');
+    const [newAssetContent, setNewAssetContent] = useState('');
+    const [savingAsset, setSavingAsset] = useState(false);
     const [refining, setRefining] = useState(false);
     const [tab, setTab] = useState<TabKey>('overview');
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -621,7 +636,9 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
 
                                     <div className="mt-4 flex flex-wrap gap-2">
                                         {tabButton('overview', 'Overview')}
+                                        {tabButton('icps', 'ICPs')}
                                         {tabButton('personas', 'Personas')}
+                                        {tabButton('assets', 'Assets')}
                                         {tabButton('triggers', 'Triggers')}
                                         {tabButton('signals', 'Signals')}
                                         {tabButton('plays', 'Plays')}
@@ -631,7 +648,40 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
 
                                 <div className="bg-[#0F162B] border border-slate-800/70 rounded-2xl p-5">
                                     {tab === 'overview' && <Overview detail={detail} />}
+                                    {tab === 'icps' && (
+                                        <ICPsPanel
+                                            missionId={selectedId!}
+                                            icps={missionICPs}
+                                            loading={icpsLoading}
+                                            onReload={async () => {
+                                                if (!selectedId) return;
+                                                setIcpsLoading(true);
+                                                try { const { data } = await listMissionICPs(selectedId); setMissionICPs(data.icps || []); } catch { /* ignore */ } finally { setIcpsLoading(false); }
+                                            }}
+                                            onDelete={async (id) => {
+                                                if (!selectedId) return;
+                                                await deleteMissionICP(selectedId, id);
+                                                setMissionICPs((prev) => prev.filter((icp) => icp.id !== id));
+                                                toast.success('ICP deleted');
+                                            }}
+                                        />
+                                    )}
                                     {tab === 'personas' && <Personas personas={detail.personas || []} />}
+                                    {tab === 'assets' && (
+                                        <AssetsPanel
+                                            assets={assets}
+                                            loading={assetsLoading}
+                                            onReload={async () => {
+                                                setAssetsLoading(true);
+                                                try { const { data } = await listAssets(); setAssets(data.assets || []); } catch { /* ignore */ } finally { setAssetsLoading(false); }
+                                            }}
+                                            onDelete={async (id) => {
+                                                await deleteAsset(id);
+                                                setAssets((prev) => prev.filter((a) => a.id !== id));
+                                                toast.success('Asset deleted');
+                                            }}
+                                        />
+                                    )}
                                     {tab === 'triggers' && <Triggers triggers={detail.triggers || []} />}
                                     {tab === 'signals' && <Signals signals={detail.signal_definitions || []} />}
                                     {tab === 'plays' && <Plays plays={detail.plays || []} />}
@@ -649,7 +699,17 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
         const active = tab === key;
         return (
             <button
-                onClick={() => setTab(key)}
+                onClick={() => {
+                    setTab(key);
+                    if (key === 'icps' && selectedId && missionICPs.length === 0) {
+                        setIcpsLoading(true);
+                        listMissionICPs(selectedId).then(({ data }) => setMissionICPs(data.icps || [])).catch(() => {}).finally(() => setIcpsLoading(false));
+                    }
+                    if (key === 'assets' && assets.length === 0) {
+                        setAssetsLoading(true);
+                        listAssets().then(({ data }) => setAssets(data.assets || [])).catch(() => {}).finally(() => setAssetsLoading(false));
+                    }
+                }}
                 className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
                     active ? 'bg-cyan-500/15 text-white border border-cyan-500/30' : 'text-slate-400 hover:text-white'
                 }`}
@@ -658,6 +718,151 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
             </button>
         );
     }
+}
+
+// ── ICP Panel ────────────────────────────────────────────────────────────────
+
+function ICPsPanel({
+    missionId, icps, loading, onReload, onDelete,
+}: {
+    missionId: string;
+    icps: ICP[];
+    loading: boolean;
+    onReload: () => Promise<void>;
+    onDelete: (id: string) => Promise<void>;
+}) {
+    const [showForm, setShowForm] = useState(false);
+    const [name, setName] = useState('');
+    const [statement, setStatement] = useState('');
+    const [priority, setPriority] = useState('Primary');
+    const [saving, setSaving] = useState(false);
+
+    const handleCreate = async () => {
+        if (!name.trim()) return;
+        setSaving(true);
+        try {
+            await createMissionICP(missionId, { name, icp_statement: statement, icp_priority: priority });
+            setName(''); setStatement(''); setShowForm(false);
+            await onReload();
+            toast.success('ICP created');
+        } catch { toast.error('Failed to create ICP'); } finally { setSaving(false); }
+    };
+
+    if (loading) return <div className="py-8 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>;
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-white">ICPs ({icps.length})</p>
+                <button onClick={() => setShowForm((v) => !v)} className="rounded-xl bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20">+ New ICP</button>
+            </div>
+            {showForm && (
+                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 space-y-3">
+                    <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ICP name" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                    <textarea value={statement} onChange={(e) => setStatement(e.target.value)} placeholder="ICP statement…" rows={2} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
+                    <select value={priority} onChange={(e) => setPriority(e.target.value)} className="rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none">
+                        <option>Primary</option><option>Secondary</option><option>Experimental</option>
+                    </select>
+                    <div className="flex gap-2">
+                        <button onClick={() => void handleCreate()} disabled={saving || !name.trim()} className="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50">{saving ? '…' : 'Create'}</button>
+                        <button onClick={() => setShowForm(false)} className="rounded-xl border border-slate-800/60 px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+                    </div>
+                </div>
+            )}
+            {icps.length === 0 ? (
+                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-8 text-center text-slate-500">No ICPs yet. Create one to link personas and plays.</div>
+            ) : (
+                <div className="space-y-3">
+                    {icps.map((icp) => (
+                        <div key={icp.id} className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 flex items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="font-semibold text-white text-sm">{icp.name}</span>
+                                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${icp.icp_priority === 'Primary' ? 'bg-emerald-500/15 text-emerald-400' : icp.icp_priority === 'Secondary' ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-500/15 text-slate-400'}`}>{icp.icp_priority}</span>
+                                </div>
+                                {icp.icp_statement && <p className="text-xs text-slate-400">{icp.icp_statement}</p>}
+                            </div>
+                            <button onClick={() => void onDelete(icp.id)} className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">✕</button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── Assets Panel ─────────────────────────────────────────────────────────────
+
+function AssetsPanel({
+    assets, loading, onReload, onDelete,
+}: {
+    assets: SocialProofAsset[];
+    loading: boolean;
+    onReload: () => Promise<void>;
+    onDelete: (id: string) => Promise<void>;
+}) {
+    const [showForm, setShowForm] = useState(false);
+    const [title, setTitle] = useState('');
+    const [type, setType] = useState('case_study');
+    const [content, setContent] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const handleCreate = async () => {
+        if (!title.trim() || !content.trim()) return;
+        setSaving(true);
+        try {
+            await createAsset({ title, type, content });
+            setTitle(''); setContent(''); setShowForm(false);
+            await onReload();
+            toast.success('Asset created');
+        } catch { toast.error('Failed to create asset'); } finally { setSaving(false); }
+    };
+
+    const typeBadge = (t: string) => {
+        if (t === 'case_study') return 'bg-cyan-500/15 text-cyan-400';
+        if (t === 'testimonial') return 'bg-emerald-500/15 text-emerald-400';
+        return 'bg-amber-500/15 text-amber-400';
+    };
+
+    if (loading) return <div className="py-8 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>;
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-white">Social Proof Assets ({assets.length})</p>
+                <button onClick={() => setShowForm((v) => !v)} className="rounded-xl bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20">+ New Asset</button>
+            </div>
+            {showForm && (
+                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 space-y-3">
+                    <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Asset title" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                    <select value={type} onChange={(e) => setType(e.target.value)} className="rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none">
+                        <option value="case_study">Case Study</option><option value="testimonial">Testimonial</option><option value="metric">Metric</option>
+                    </select>
+                    <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Content…" rows={3} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
+                    <div className="flex gap-2">
+                        <button onClick={() => void handleCreate()} disabled={saving || !title.trim() || !content.trim()} className="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50">{saving ? '…' : 'Create'}</button>
+                        <button onClick={() => setShowForm(false)} className="rounded-xl border border-slate-800/60 px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+                    </div>
+                </div>
+            )}
+            {assets.length === 0 ? (
+                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-8 text-center text-slate-500">No assets yet. Add case studies, testimonials, and metrics.</div>
+            ) : (
+                <div className="space-y-3">
+                    {assets.map((asset) => (
+                        <div key={asset.id} className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 flex items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="font-semibold text-white text-sm">{asset.title}</span>
+                                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${typeBadge(asset.type)}`}>{asset.type.replace('_', ' ')}</span>
+                                </div>
+                                <p className="text-xs text-slate-400 line-clamp-2">{asset.content}</p>
+                            </div>
+                            <button onClick={() => void onDelete(asset.id)} className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">✕</button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
 }
 
 // Helpers

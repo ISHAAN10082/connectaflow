@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
     Sparkles, BarChart3, Radio, Target, Download, Zap,
     BookOpen, Plus, Building2, FlaskRound, RefreshCw, ArrowRight, CheckCircle2, CircleDashed,
-    Database, Compass, ClipboardCheck, PanelLeftClose, PanelLeftOpen
+    Database, Compass, ClipboardCheck, PanelLeftClose, PanelLeftOpen, MessageSquare, Wand2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { GTMIntelligence } from './GTMIntelligence';
@@ -14,6 +14,10 @@ import { SignalQueue } from './SignalQueue';
 import { KPIDashboard } from './KPIDashboard';
 import { LeadTable } from './LeadTable';
 import { PlaybookManager } from './PlaybookManager';
+import { PlaysMessagingStudio } from './PlaysMessagingStudio';
+import { RepliesInbox } from './RepliesInbox';
+import { OutcomesDashboard } from './OutcomesDashboard';
+import { AICopilot } from './AICopilot';
 import {
     applyPlaybookTemplate,
     createGTMContext,
@@ -33,15 +37,17 @@ import {
 } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 
-type Screen = 'gtm-context' | 'playbooks' | 'enrichment' | 'signals' | 'leads' | 'analytics';
+type Screen = 'gtm-context' | 'playbooks' | 'enrichment' | 'signals' | 'leads' | 'analytics' | 'replies' | 'plays-messaging';
 
 const NAV_ITEMS: { key: Screen; label: string; icon: typeof Sparkles; desc: string; module: string }[] = [
     { key: 'gtm-context', label: 'Mission Setup', icon: Target, desc: 'Define the GTM thesis, ICP, personas, and plays.', module: 'GTM Intelligence' },
     { key: 'enrichment', label: 'Accounts', icon: Sparkles, desc: 'Import domains and enrich accounts with evidence and provenance.', module: 'Enrichment' },
     { key: 'signals', label: 'Queue', icon: Radio, desc: 'Review urgency, confidence, and who deserves attention now.', module: 'Signal Queue' },
-    { key: 'playbooks', label: 'Plays', icon: BookOpen, desc: 'Operationalize the next move and keep execution moving.', module: 'Playbooks' },
+    { key: 'plays-messaging', label: 'Messaging', icon: Wand2, desc: 'Create and generate messaging plays and email variants.', module: 'Plays Messaging Studio' },
     { key: 'leads', label: 'Records', icon: Database, desc: 'Search, edit, and maintain the actual contact database.', module: 'Leads' },
-    { key: 'analytics', label: 'Outcomes', icon: BarChart3, desc: 'See throughput, health, and what the system is learning.', module: 'Command Center' },
+    { key: 'replies', label: 'Replies', icon: MessageSquare, desc: 'Central inbox for all reply types with AI classification.', module: 'Replies Inbox' },
+    { key: 'analytics', label: 'Outcomes', icon: BarChart3, desc: 'See throughput, health, and what the system is learning.', module: 'Outcomes' },
+    { key: 'playbooks', label: 'Playbooks', icon: BookOpen, desc: 'Operationalize the next move and keep execution moving.', module: 'Playbooks' },
 ];
 
 const DEMO_ENRICHMENT_DOMAINS = [
@@ -291,6 +297,20 @@ export function ControlPanel() {
                     helper: 'Maintain the contact and account database',
                 };
             }
+            if (item.key === 'plays-messaging') {
+                return {
+                    ...item,
+                    done: false,
+                    helper: 'Build messaging anatomy and email variants',
+                };
+            }
+            if (item.key === 'replies') {
+                return {
+                    ...item,
+                    done: false,
+                    helper: 'Manage and classify inbound replies',
+                };
+            }
             return {
                 ...item,
                 done: summary.contexts > 0 || summary.enrichedCompanies > 0 || summary.signaledCompanies > 0,
@@ -344,7 +364,7 @@ export function ControlPanel() {
         const actions: Record<Screen, { label: string; screen: Screen }[]> = {
             'gtm-context': [
                 { label: 'Go to Accounts', screen: 'enrichment' },
-                { label: 'Go to Plays', screen: 'playbooks' },
+                { label: 'Messaging Studio', screen: 'plays-messaging' },
             ],
             'enrichment': [
                 { label: 'Inspect Queue', screen: 'signals' },
@@ -352,7 +372,11 @@ export function ControlPanel() {
             ],
             'signals': [
                 { label: 'Open Records', screen: 'leads' },
-                { label: 'Launch Plays', screen: 'playbooks' },
+                { label: 'Messaging Studio', screen: 'plays-messaging' },
+            ],
+            'plays-messaging': [
+                { label: 'View Replies', screen: 'replies' },
+                { label: 'Review Outcomes', screen: 'analytics' },
             ],
             'playbooks': [
                 { label: 'Open Queue', screen: 'signals' },
@@ -362,9 +386,13 @@ export function ControlPanel() {
                 { label: 'Inspect Queue', screen: 'signals' },
                 { label: 'Review Outcomes', screen: 'analytics' },
             ],
+            'replies': [
+                { label: 'Open Records', screen: 'leads' },
+                { label: 'Review Outcomes', screen: 'analytics' },
+            ],
             'analytics': [
                 { label: 'Open Queue', screen: 'signals' },
-                { label: 'Open Records', screen: 'leads' },
+                { label: 'View Replies', screen: 'replies' },
             ],
         };
         return actions[activeScreen];
@@ -583,8 +611,20 @@ export function ControlPanel() {
                             <LeadTable />
                         </div>
                     )}
-                    {activeScreen === 'analytics' && <KPIDashboard />}
+                    {activeScreen === 'analytics' && <OutcomesDashboard />}
+                    {activeScreen === 'replies' && (
+                        <div className="flex flex-col h-[calc(100vh-81px)]">
+                            <RepliesInbox />
+                        </div>
+                    )}
+                    {activeScreen === 'plays-messaging' && (
+                        <div className="flex h-[calc(100vh-81px)]">
+                            <PlaysMessagingStudio />
+                        </div>
+                    )}
                 </div>
+                {/* AI Copilot — floating, always rendered */}
+                <AICopilot />
             </main>
         </div>
     );

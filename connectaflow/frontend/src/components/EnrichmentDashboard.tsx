@@ -330,14 +330,23 @@ export function EnrichmentDashboard({ icpId, initialDomains }: Props) {
                                                 </div>
                                                 <span className="text-xs text-slate-400 font-mono">{(profile.quality_score * 100).toFixed(0)}%</span>
                                             </div>
-                                            {/* ICP score */}
+                                            {/* ICP score + tier */}
                                             {score && (
-                                                <div className={`px-2.5 py-1 rounded-lg text-xs font-bold ${FIT_COLORS[score.fit_category]?.bg || ''} ${FIT_COLORS[score.fit_category]?.text || 'text-slate-400'}`}>
-                                                    {score.final_score?.toFixed(0) || '—'}
-                                                    {score.score_low != null && score.score_high != null && (
-                                                        <span className="font-normal ml-1 opacity-60">
-                                                            ±{((score.score_high - score.score_low) / 2).toFixed(0)}
-                                                        </span>
+                                                <div className="flex items-center gap-2">
+                                                    <div className={`px-2.5 py-1 rounded-lg text-xs font-bold ${FIT_COLORS[score.fit_category]?.bg || ''} ${FIT_COLORS[score.fit_category]?.text || 'text-slate-400'}`}>
+                                                        {score.final_score?.toFixed(0) || '—'}
+                                                        {score.score_low != null && score.score_high != null && (
+                                                            <span className="font-normal ml-1 opacity-60">
+                                                                ±{((score.score_high - score.score_low) / 2).toFixed(0)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {score.tier && (
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                            score.tier === 'T1' ? 'bg-emerald-500/20 text-emerald-400' :
+                                                            score.tier === 'T2' ? 'bg-amber-500/20 text-amber-400' :
+                                                            'bg-slate-500/20 text-slate-400'
+                                                        }`}>{score.tier}</span>
                                                     )}
                                                 </div>
                                             )}
@@ -363,6 +372,49 @@ export function EnrichmentDashboard({ icpId, initialDomains }: Props) {
                                         {/* Expanded detail */}
                                         {isExpanded && (
                                             <div className="px-5 pb-5 md:px-12 animate-in fade-in slide-in-from-top-2 duration-300">
+                                                {/* ICP Criterion Score Breakdown */}
+                                                {score && Object.keys(score.criterion_scores || {}).length > 0 && (
+                                                    <div className="mb-3 bg-[#0A0F1E] rounded-xl border border-slate-800/40 p-4">
+                                                        <div className="flex items-center justify-between mb-3">
+                                                            <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider">ICP Score Breakdown</p>
+                                                            <div className="flex items-center gap-2">
+                                                                {score.tier && (
+                                                                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                                                        score.tier === 'T1' ? 'bg-emerald-500/20 text-emerald-400' :
+                                                                        score.tier === 'T2' ? 'bg-amber-500/20 text-amber-400' :
+                                                                        'bg-slate-500/20 text-slate-400'
+                                                                    }`}>{score.tier}</span>
+                                                                )}
+                                                                <span className={`text-sm font-bold ${FIT_COLORS[score.fit_category]?.text || 'text-slate-400'}`}>
+                                                                    {score.final_score?.toFixed(1) || '—'} / 100
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            {Object.entries(score.criterion_scores).map(([criterion, val]) => (
+                                                                <div key={criterion} className="flex items-center gap-3">
+                                                                    <span className="text-[11px] text-slate-400 w-32 shrink-0 capitalize">{criterion.replace(/_/g, ' ')}</span>
+                                                                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                                                        <div
+                                                                            className={`h-full rounded-full ${
+                                                                                (val ?? 0) >= 70 ? 'bg-emerald-500' :
+                                                                                (val ?? 0) >= 40 ? 'bg-amber-500' :
+                                                                                'bg-red-500'
+                                                                            }`}
+                                                                            style={{ width: `${val ?? 0}%` }}
+                                                                        />
+                                                                    </div>
+                                                                    <span className="text-[11px] font-mono text-slate-400 w-8 text-right">{val != null ? `${val.toFixed(0)}` : '—'}</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        {score.missing_fields.length > 0 && (
+                                                            <p className="mt-2 text-[10px] text-amber-400">
+                                                                Missing fields: {score.missing_fields.join(', ')}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                )}
                                                 <div className="bg-[#0A0F1E] rounded-xl border border-slate-800/40 divide-y divide-slate-800/30 max-h-[420px] overflow-y-auto">
                                                     {Object.entries(profile.enriched_data || {})
                                                         .sort(([fieldA], [fieldB]) => {

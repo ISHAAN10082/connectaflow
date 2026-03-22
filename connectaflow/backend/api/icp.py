@@ -201,6 +201,23 @@ async def score_batch(
 
     session.commit()
 
+    # Assign T1/T2/T3 tiers to all scores for this workspace
+    from services.intelligence.scorer import assign_tiers
+    all_scores = session.exec(
+        select(ICPScore)
+        .where(ICPScore.icp_id == icp.id)
+        .where(ICPScore.workspace_id == workspace_id)
+    ).all()
+    tiered = assign_tiers(list(all_scores))
+    for ts in tiered:
+        session.add(ts)
+    session.commit()
+
+    # Refresh tier info into response
+    tier_map = {ts.domain: ts.tier for ts in tiered}
+    for s in scores:
+        s["tier"] = tier_map.get(s["domain"])
+
     # Sort by score descending
     scores.sort(key=lambda s: s.get("final_score") or 0, reverse=True)
     return {"scores": scores, "total": len(scores), "icp_name": icp.name}

@@ -28,8 +28,34 @@ async def lifespan(app: FastAPI):
         logger.info(f"LLM providers: {', '.join(providers)}")
 
     logger.info(f"CORS origins: {settings.cors_origins_list}")
+
+    # ── APScheduler: external signal discovery every 6 hours ────────────────
+    scheduler = None
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from services.signals.external_discovery import run_external_discovery
+
+        scheduler = AsyncIOScheduler()
+        interval_hours = getattr(settings, "EXTERNAL_SIGNAL_DISCOVERY_INTERVAL_HOURS", 6)
+        scheduler.add_job(
+            run_external_discovery,
+            "interval",
+            hours=interval_hours,
+            id="external_signal_discovery",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info(f"APScheduler started: external signal discovery every {interval_hours}h")
+    except ImportError:
+        logger.warning("APScheduler not installed — external signal discovery disabled. Run: pip install apscheduler")
+    except Exception as exc:
+        logger.warning(f"APScheduler setup failed: {exc}")
+
     yield
+
     logger.info("Shutting down Connectaflow V2")
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -60,6 +86,13 @@ from api.lists import router as lists_router
 from api.segments import router as segments_router
 from api.messaging import router as messaging_router
 from api.campaigns import router as campaigns_router
+# New routers — spec compliance
+from api.activities import router as activities_router
+from api.replies import router as replies_router
+from api.assets import router as assets_router
+from api.copilot import router as copilot_router
+from api.plays_messaging import router as plays_messaging_router
+from api.outcomes import router as outcomes_router
 
 app.include_router(leads_router, prefix="/api")
 app.include_router(enrichment_router, prefix="/api")
@@ -72,6 +105,13 @@ app.include_router(lists_router, prefix="/api")
 app.include_router(segments_router, prefix="/api")
 app.include_router(messaging_router, prefix="/api")
 app.include_router(campaigns_router, prefix="/api")
+# New routers
+app.include_router(activities_router, prefix="/api")
+app.include_router(replies_router, prefix="/api")
+app.include_router(assets_router, prefix="/api")
+app.include_router(copilot_router, prefix="/api")
+app.include_router(plays_messaging_router, prefix="/api")
+app.include_router(outcomes_router, prefix="/api")
 
 
 @app.get("/api/health")
