@@ -458,6 +458,12 @@ export const listWorkspaces = () =>
 export const createWorkspace = (data: { name: string }) =>
     api.post<WorkspaceData>('/workspaces/', data);
 
+export const updateWorkspace = (id: string, data: { name?: string; settings?: JsonRecord }) =>
+    api.patch<WorkspaceData>(`/workspaces/${id}`, data);
+
+export const seedWorkspaceDemo = (id: string) =>
+    api.post<{ status: string; workspace_id: string; mission_id: string; primary_icp_id: string; companies: number; leads: number; signals: number; playbook_id: string; messaging_play_id: string }>(`/workspaces/${id}/seed-demo`);
+
 // Leads
 export const getLeads = ({ skip = 0, limit = 50, status, q, enriched_only }: LeadListParams = {}) => {
     const params = new URLSearchParams({
@@ -783,8 +789,11 @@ export interface Reply {
     workspace_id: string;
     lead_id: string | null;
     lead?: { id: string; name: string; email: string; domain: string | null; status: string } | null;
+    account_id?: string | null;
+    account_domain?: string | null;
     activity_id: string | null;
     play_id: string | null;
+    email_variant_id?: string | null;
     channel: string; // email | linkedin | call
     reply_text: string;
     classification: string | null; // interested | objection | neutral | ooo
@@ -923,6 +932,22 @@ export const updateMissionICP = (missionId: string, icpId: string, data: Partial
 export const deleteMissionICP = (missionId: string, icpId: string) =>
     api.delete(`/gtm/${missionId}/icps/${icpId}`);
 
+export const duplicateMissionICP = (missionId: string, icpId: string) =>
+    api.post<ICP>(`/gtm/${missionId}/icps/${icpId}/duplicate`);
+
+// ─────────────────────────────────────────────────────────────
+// GTM Persona / Trigger / Signal update
+// ─────────────────────────────────────────────────────────────
+
+export const updatePersona = (personaId: string, data: Partial<PersonaData>) =>
+    api.patch<PersonaData>(`/gtm/personas/${personaId}`, data);
+
+export const updateTrigger = (triggerId: string, data: Partial<BuyingTriggerData>) =>
+    api.patch<BuyingTriggerData>(`/gtm/triggers/${triggerId}`, data);
+
+export const updateSignalDef = (signalId: string, data: Partial<SignalDefinitionData>) =>
+    api.patch<SignalDefinitionData>(`/gtm/signals/${signalId}`, data);
+
 // ─────────────────────────────────────────────────────────────
 // Assets API
 // ─────────────────────────────────────────────────────────────
@@ -946,7 +971,7 @@ export const deleteAsset = (id: string) =>
 export const listReplies = (params?: { lead_id?: string; channel?: string; classification?: string; play_id?: string; skip?: number; limit?: number }) =>
     api.get<{ replies: Reply[]; total: number; skip: number; limit: number }>('/replies/', { params });
 
-export const createReply = (data: { lead_id?: string; channel: string; reply_text: string; source?: string; play_id?: string; received_at?: string }) =>
+export const createReply = (data: { lead_id?: string; lead_email?: string; account_domain?: string; channel: string; reply_text: string; source?: string; play_id?: string; email_variant_id?: string; received_at?: string; activity_id?: string }) =>
     api.post<Reply>('/replies/', data);
 
 export const deleteReply = (id: string) =>
@@ -1059,6 +1084,20 @@ export const downloadLinkedinTemplate = () =>
 
 export const downloadCallsTemplate = () =>
     window.open(`${API_BASE}/outcomes/templates/calls`, '_blank');
+
+export const uploadEmailCSV = (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post<{ created: number; errors: string[] }>('/outcomes/upload/email', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+    });
+};
+
+export const downloadEmailTemplate = () =>
+    window.open(`${API_BASE}/outcomes/templates/email`, '_blank');
+
+export const downloadRepliesSampleCSV = () =>
+    window.open(`${API_BASE}/replies/sample-csv`, '_blank');
 
 // ─────────────────────────────────────────────────────────────
 // External Signals API

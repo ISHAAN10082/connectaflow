@@ -15,6 +15,7 @@ from database import get_session
 from models import ICPDefinition, ICPScore, CompanyProfile, ICPRubric
 from services.intelligence.icp_builder import generate_icp
 from services.intelligence.scorer import score_company
+from services.records import ensure_account_for_domain
 
 router = APIRouter(prefix="/icp", tags=["icp"])
 
@@ -187,6 +188,11 @@ async def score_batch(
         else:
             session.add(icp_score)
 
+        account = ensure_account_for_domain(session, workspace_id, profile.domain, name=profile.name)
+        if account:
+            account.latest_icp_score = icp_score.final_score
+            session.add(account)
+
         scores.append({
             "domain": profile.domain,
             "name": profile.name,
@@ -211,6 +217,11 @@ async def score_batch(
     tiered = assign_tiers(list(all_scores))
     for ts in tiered:
         session.add(ts)
+        account = ensure_account_for_domain(session, workspace_id, ts.domain)
+        if account:
+            account.latest_tier = ts.tier
+            account.latest_icp_score = ts.final_score
+            session.add(account)
     session.commit()
 
     # Refresh tier info into response

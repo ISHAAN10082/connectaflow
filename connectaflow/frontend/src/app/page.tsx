@@ -1,5 +1,5 @@
-import { ControlPanel } from '@/components/ControlPanel';
+import { ClientOnlyControlPanel } from '@/components/ClientOnlyControlPanel';
 
 export default function Home() {
-  return <ControlPanel />;
+  return <ClientOnlyControlPanel />;
 }

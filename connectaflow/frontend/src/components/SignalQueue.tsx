@@ -133,7 +133,7 @@ export function SignalQueue({ icpId }: Props) {
 
     return (
         <div className="h-full overflow-y-auto" id="signal-queue">
-            <div className="max-w-6xl mx-auto p-8 pb-24">
+            <div className="max-w-6xl mx-auto p-6 pb-16">
                 {/* Tab bar: Internal / External */}
                 <div className="flex gap-2 mb-6">
                     <button
@@ -218,29 +218,18 @@ export function SignalQueue({ icpId }: Props) {
                 {/* Internal Signals Tab - existing content below */}
                 {activeTab === 'internal' && (
                 <div>
-
-                {/* Header */}
-                <div className="flex items-center justify-between mb-8">
+                <div className="mb-5 flex flex-wrap items-center gap-3 rounded-2xl border border-slate-800/60 bg-[#131A2E] px-4 py-3">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-orange-500 flex items-center justify-center shadow-lg shadow-rose-500/20">
-                            <Radio className="w-5 h-5 text-white" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-rose-500/12 text-rose-300">
+                            <Radio className="h-4 w-4" />
                         </div>
                         <div>
-                            <h1 className="text-xl font-bold text-white tracking-tight">Warm Signal Queue</h1>
-                            <p className="text-sm text-slate-400">Contact these companies today — ranked by ICP × Signal × Recency</p>
+                            <h1 className="text-base font-semibold text-white">Warm Signal Queue</h1>
+                            <p className="text-xs text-slate-500">Ranked by ICP fit, signal strength, and recency.</p>
                         </div>
                     </div>
-                    <button
-                        onClick={loadQueue}
-                        disabled={loading}
-                        className="p-2.5 bg-[#131A2E] border border-slate-800/60 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all"
-                    >
-                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    </button>
-                </div>
 
-                <div className="mb-6 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-                    <div className="relative">
+                    <div className="relative min-w-[260px] flex-1">
                         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                         <input
                             value={query}
@@ -249,16 +238,24 @@ export function SignalQueue({ icpId }: Props) {
                                 setQuery(event.target.value);
                             }}
                             placeholder="Search domain, company, signal, or evidence"
-                            className="w-full rounded-2xl border border-slate-800/60 bg-[#131A2E] py-3 pl-9 pr-4 text-sm text-white outline-none focus:border-cyan-500/40"
+                            className="w-full rounded-xl border border-slate-800/60 bg-[#0E1528] py-2.5 pl-9 pr-4 text-sm text-white outline-none focus:border-cyan-500/40"
                         />
                     </div>
-                    <div className="grid grid-cols-3 gap-3">
+
+                    <div className="flex flex-wrap items-center gap-2">
                         {queueSections.map((section) => (
-                            <div key={section.key} className="rounded-2xl border border-slate-800/60 bg-[#131A2E] px-4 py-3">
-                                <p className="text-[11px] uppercase tracking-wider text-slate-500">{section.title}</p>
-                                <p className="mt-1 text-lg font-bold text-white">{section.count}</p>
-                            </div>
+                            <span key={section.key} className="rounded-full border border-slate-700/80 bg-[#0E1528] px-3 py-1 text-xs text-slate-300">
+                                <span className="text-slate-500">{section.title}</span>{' '}
+                                <span className="font-semibold text-white">{section.count}</span>
+                            </span>
                         ))}
+                        <button
+                            onClick={loadQueue}
+                            disabled={loading}
+                            className="rounded-xl border border-slate-800/60 bg-[#0E1528] p-2 text-slate-400 transition hover:text-white"
+                        >
+                            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        </button>
                     </div>
                 </div>
 

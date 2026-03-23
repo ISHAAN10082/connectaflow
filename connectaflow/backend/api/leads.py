@@ -11,7 +11,8 @@ from sqlalchemy import func, or_
 
 from api.deps import get_workspace_id
 from database import get_session
-from models import Lead, LeadCreate, LeadUpdate, CustomField, CompanyProfile, ICPScore
+from models import Lead, LeadCreate, LeadUpdate, CustomField, CompanyProfile, ICPScore, Workspace
+from services.records import record_outcome, sync_follow_up_task, sync_lead_account
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -150,6 +151,9 @@ async def create_lead(
         workspace_id=workspace_id,
     )
     session.add(new_lead)
+    session.flush()
+    sync_lead_account(session, workspace_id, new_lead)
+    sync_follow_up_task(session, workspace_id, new_lead)
     session.commit()
     session.refresh(new_lead)
     return new_lead
@@ -207,12 +211,16 @@ async def update_lead(
         raise HTTPException(404, "Lead not found")
 
     update_data = update.model_dump(exclude_unset=True)
+    previous_status = lead.status
 
     # Auto-set cooldown_until when status transitions to Cool Down
     new_status = update_data.get("status")
+    workspace = session.get(Workspace, workspace_id)
+    settings = (workspace.settings or {}) if workspace else {}
+    default_cooldown_months = int(settings.get("cooldown_months") or 6)
     if new_status == "Cool Down" and lead.status != "Cool Down":
         if "cooldown_until" not in update_data:
-            update_data["cooldown_until"] = datetime.utcnow() + timedelta(days=180)
+            update_data["cooldown_until"] = datetime.utcnow() + timedelta(days=max(default_cooldown_months, 1) * 30)
     # Clear cooldown when transitioning away from Cool Down
     elif new_status and new_status != "Cool Down" and lead.status == "Cool Down":
         update_data.setdefault("cooldown_until", None)
@@ -222,6 +230,28 @@ async def update_lead(
         setattr(lead, key, value)
 
     lead.updated_at = datetime.utcnow()
+    sync_lead_account(session, workspace_id, lead)
+    sync_follow_up_task(session, workspace_id, lead)
+
+    if new_status == "Meeting Booked" and previous_status != "Meeting Booked":
+        record_outcome(
+            session,
+            workspace_id,
+            lead_id=lead.id,
+            account_id=lead.company_id,
+            outcome_type="meeting_booked",
+            notes="Lead marked as meeting booked.",
+        )
+    elif new_status == "Replied" and previous_status != "Replied":
+        record_outcome(
+            session,
+            workspace_id,
+            lead_id=lead.id,
+            account_id=lead.company_id,
+            outcome_type="reply_received",
+            notes="Lead marked as replied.",
+        )
+
     session.add(lead)
     session.commit()
     session.refresh(lead)
@@ -260,10 +290,23 @@ async def start_cooldown(
     if not lead or lead.workspace_id != workspace_id:
         raise HTTPException(404, "Lead not found")
 
-    lead.status = "Cool Down"
-    lead.cooldown_until = datetime.utcnow() + timedelta(days=months * 30)
-    lead.updated_at = datetime.utcnow()
-    session.add(lead)
+    workspace = session.get(Workspace, workspace_id)
+    settings = (workspace.settings or {}) if workspace else {}
+    cooldown_months = months or int(settings.get("cooldown_months") or 6)
+    impacted_leads = [lead]
+    if lead.domain:
+        impacted_leads = session.exec(
+            select(Lead)
+            .where(Lead.workspace_id == workspace_id)
+            .where(Lead.domain == lead.domain)
+        ).all()
+
+    cooldown_until = datetime.utcnow() + timedelta(days=max(cooldown_months, 1) * 30)
+    for impacted in impacted_leads:
+        impacted.status = "Cool Down"
+        impacted.cooldown_until = cooldown_until
+        impacted.updated_at = datetime.utcnow()
+        session.add(impacted)
     session.commit()
     session.refresh(lead)
     return {
@@ -287,11 +330,20 @@ async def end_cooldown(
     if not lead or lead.workspace_id != workspace_id:
         raise HTTPException(404, "Lead not found")
 
-    lead.status = "Not Contacted"
-    lead.cooldown_until = None
-    lead.contacts_without_reply = 0
-    lead.updated_at = datetime.utcnow()
-    session.add(lead)
+    impacted_leads = [lead]
+    if lead.domain:
+        impacted_leads = session.exec(
+            select(Lead)
+            .where(Lead.workspace_id == workspace_id)
+            .where(Lead.domain == lead.domain)
+        ).all()
+
+    for impacted in impacted_leads:
+        impacted.status = "Not Contacted"
+        impacted.cooldown_until = None
+        impacted.contacts_without_reply = 0
+        impacted.updated_at = datetime.utcnow()
+        session.add(impacted)
     session.commit()
     session.refresh(lead)
     return {

@@ -12,8 +12,9 @@ from sqlmodel import Session, select
 
 from database import get_session
 from api.deps import get_workspace_id
-from models import Reply, ReplyCreate, Lead
+from models import Reply, ReplyCreate, Lead, Activity
 from services.intelligence.reply_classifier import classify_reply, extract_top_objections
+from services.records import ensure_account_for_domain, record_outcome, sync_lead_account
 
 router = APIRouter(prefix="/replies", tags=["replies"])
 
@@ -27,21 +28,66 @@ async def create_reply(
     session: Session = Depends(get_session),
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
-    lead_id = uuid.UUID(payload.lead_id) if payload.lead_id else None
+    lead = _resolve_lead_reference(payload.lead_id, payload.lead_email, workspace_id, session)
+    activity = None
     activity_id = uuid.UUID(payload.activity_id) if payload.activity_id else None
-    play_id = uuid.UUID(payload.play_id) if payload.play_id else None
+    if activity_id:
+        activity = session.get(Activity, activity_id)
+        if activity and activity.workspace_id != workspace_id:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+    if not lead and activity and activity.lead_id:
+        lead = session.get(Lead, activity.lead_id)
+        if lead and lead.workspace_id != workspace_id:
+            lead = None
+
+    play_id = uuid.UUID(payload.play_id) if payload.play_id else (activity.play_id if activity else None)
+    email_variant_id = uuid.UUID(payload.email_variant_id) if payload.email_variant_id else (activity.email_variant_id if activity else None)
+    account_domain = payload.account_domain or (activity.account_domain if activity else None) or (lead.domain if lead else None)
+    account = ensure_account_for_domain(
+        session,
+        workspace_id,
+        account_domain,
+        name=(lead.custom_data or {}).get("company_name") if lead and isinstance(lead.custom_data, dict) else None,
+        touch_signal=True,
+    )
 
     reply = Reply(
         workspace_id=workspace_id,
-        lead_id=lead_id,
+        lead_id=lead.id if lead else None,
+        account_id=account.id if account else None,
+        account_domain=account.domain if account else account_domain,
         activity_id=activity_id,
         play_id=play_id,
+        email_variant_id=email_variant_id,
         channel=payload.channel,
         reply_text=payload.reply_text,
         source=payload.source,
         received_at=payload.received_at or datetime.utcnow(),
     )
     session.add(reply)
+    session.flush()
+
+    if lead:
+        lead.status = "Meeting Booked" if lead.status == "Meeting Booked" else "Replied"
+        lead.contacts_without_reply = 0
+        lead.updated_at = datetime.utcnow()
+        sync_lead_account(session, workspace_id, lead)
+        session.add(lead)
+
+    record_outcome(
+        session,
+        workspace_id,
+        lead_id=lead.id if lead else None,
+        account_id=account.id if account else None,
+        play_id=play_id,
+        channel=payload.channel,
+        outcome_type="reply_received",
+        notes="Reply logged into inbox.",
+        metadata={"source": payload.source},
+        occurred_at=reply.received_at,
+    )
+
     session.commit()
     session.refresh(reply)
 
@@ -183,15 +229,13 @@ async def upload_replies_csv(
             continue
 
         # Find lead by email
-        lead_id = None
+        lead = None
         if lead_email:
             lead = session.exec(
                 select(Lead)
                 .where(Lead.email == lead_email)
                 .where(Lead.workspace_id == workspace_id)
             ).first()
-            if lead:
-                lead_id = lead.id
 
         received_at = datetime.utcnow()
         if row.get("received_at"):
@@ -200,9 +244,19 @@ async def upload_replies_csv(
             except Exception:
                 pass
 
+        account_domain = lead.domain if lead else None
+        account = ensure_account_for_domain(
+            session,
+            workspace_id,
+            account_domain,
+            name=(lead.custom_data or {}).get("company_name") if lead and isinstance(lead.custom_data, dict) else None,
+            touch_signal=True,
+        )
         reply = Reply(
             workspace_id=workspace_id,
-            lead_id=lead_id,
+            lead_id=lead.id if lead else None,
+            account_id=account.id if account else None,
+            account_domain=account.domain if account else account_domain,
             channel=channel,
             reply_text=reply_text,
             source="manual_csv",
@@ -211,6 +265,25 @@ async def upload_replies_csv(
         session.add(reply)
         session.flush()
         reply_ids.append(reply.id)
+
+        if lead:
+            lead.status = "Meeting Booked" if lead.status == "Meeting Booked" else "Replied"
+            lead.contacts_without_reply = 0
+            lead.updated_at = datetime.utcnow()
+            sync_lead_account(session, workspace_id, lead)
+            session.add(lead)
+
+        record_outcome(
+            session,
+            workspace_id,
+            lead_id=lead.id if lead else None,
+            account_id=account.id if account else None,
+            channel=channel,
+            outcome_type="reply_received",
+            notes="Reply imported from CSV.",
+            metadata={"source": "manual_csv"},
+            occurred_at=received_at,
+        )
         created += 1
 
     session.commit()
@@ -266,8 +339,11 @@ def _reply_dict(reply: Reply, session: Session) -> dict:
         "workspace_id": str(reply.workspace_id),
         "lead_id": str(reply.lead_id) if reply.lead_id else None,
         "lead": lead_info,
+        "account_id": str(reply.account_id) if reply.account_id else None,
+        "account_domain": reply.account_domain,
         "activity_id": str(reply.activity_id) if reply.activity_id else None,
         "play_id": str(reply.play_id) if reply.play_id else None,
+        "email_variant_id": str(reply.email_variant_id) if reply.email_variant_id else None,
         "channel": reply.channel,
         "reply_text": reply.reply_text,
         "classification": reply.classification,
@@ -275,3 +351,55 @@ def _reply_dict(reply: Reply, session: Session) -> dict:
         "source": reply.source,
         "received_at": reply.received_at.isoformat() if reply.received_at else None,
     }
+
+
+@router.get("/sample-csv")
+def download_sample_csv():
+    """Download a sample CSV for bulk reply import."""
+    import io as _io
+    import csv as _csv
+    from fastapi.responses import StreamingResponse
+    output = _io.StringIO()
+    writer = _csv.writer(output)
+    writer.writerow(["lead_email", "channel", "reply_text", "timestamp"])
+    writer.writerow(["jane@acme.com", "email", "Thanks, I'd love to see a demo", "2026-03-15T10:30:00"])
+    writer.writerow(["bob@techco.io", "linkedin", "Not the right time, maybe next quarter", "2026-03-16T09:00:00"])
+    writer.writerow(["alice@startup.com", "call", "Send me the pricing deck", "2026-03-17T14:15:00"])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=replies_sample.csv"},
+    )
+
+
+def _resolve_lead_reference(
+    lead_ref: Optional[str],
+    lead_email: Optional[str],
+    workspace_id: uuid.UUID,
+    session: Session,
+) -> Optional[Lead]:
+    if lead_ref:
+        try:
+            lead = session.get(Lead, uuid.UUID(lead_ref))
+            if lead and lead.workspace_id == workspace_id:
+                return lead
+        except (ValueError, TypeError):
+            pass
+
+        lead = session.exec(
+            select(Lead)
+            .where(Lead.email == lead_ref.strip())
+            .where(Lead.workspace_id == workspace_id)
+        ).first()
+        if lead:
+            return lead
+
+    if lead_email:
+        return session.exec(
+            select(Lead)
+            .where(Lead.email == lead_email.strip())
+            .where(Lead.workspace_id == workspace_id)
+        ).first()
+
+    return None

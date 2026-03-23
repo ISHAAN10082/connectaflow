@@ -5,15 +5,14 @@ import {
   Linkedin,
   Phone,
   Filter,
+  Search,
   Upload,
+  Download,
   Plus,
   X,
   ChevronRight,
   RefreshCw,
   TrendingUp,
-  AlertCircle,
-  Clock,
-  Smile,
   Check,
   FileText,
   Layers,
@@ -31,6 +30,9 @@ import api, {
 } from '../services/api';
 import { getErrorMessage } from '../lib/errors';
 
+type ReplyChannel = 'email' | 'linkedin' | 'call';
+type ReplySource = 'smartlead' | 'manual_csv' | 'manual_entry';
+
 export function RepliesInbox() {
   const [replies, setReplies] = useState<Reply[]>([]);
   const [total, setTotal] = useState(0);
@@ -41,13 +43,18 @@ export function RepliesInbox() {
     total_replies: number;
   } | null>(null);
   const [selectedReply, setSelectedReply] = useState<Reply | null>(null);
-  const [filterChannel, setFilterChannel] = useState('all');
-  const [filterClassification, setFilterClassification] = useState('all');
+  const [filterChannel, setFilterChannel] = useState<'all' | ReplyChannel>('all');
+  const [filterClassification, setFilterClassification] = useState<'all' | 'interested' | 'objection' | 'neutral' | 'ooo'>('all');
   const [searchQ, setSearchQ] = useState('');
   const [showLogModal, setShowLogModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
-  const [logForm, setLogForm] = useState({
-    lead_id: '',
+  const [logForm, setLogForm] = useState<{
+    lead_email: string;
+    channel: ReplyChannel;
+    reply_text: string;
+    source: ReplySource;
+  }>({
+    lead_email: '',
     channel: 'email',
     reply_text: '',
     source: 'manual_entry'
@@ -61,7 +68,7 @@ export function RepliesInbox() {
   const [briefLoading, setBriefLoading] = useState(false);
   const [insightsCollapsed, setInsightsCollapsed] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadChannel, setUploadChannel] = useState('email');
+  const [uploadChannel, setUploadChannel] = useState<ReplyChannel>('email');
   const autoReloadInterval = useRef<NodeJS.Timeout | null>(null);
 
   const formatTimeAgo = (isoString: string): string => {
@@ -185,16 +192,16 @@ export function RepliesInbox() {
 
     try {
       await createReply({
-        lead_id: logForm.lead_id || undefined,
-        channel: logForm.channel as any,
+        lead_email: logForm.lead_email || undefined,
+        channel: logForm.channel,
         reply_text: logForm.reply_text,
-        source: logForm.source as any
+        source: logForm.source
       });
 
       toast.success('Reply logged successfully');
       setShowLogModal(false);
       setLogForm({
-        lead_id: '',
+        lead_email: '',
         channel: 'email',
         reply_text: '',
         source: 'manual_entry'
@@ -368,7 +375,7 @@ export function RepliesInbox() {
         <div className="flex items-center gap-2">
           <Filter className="w-4 h-4 text-slate-500 flex-shrink-0" />
           <div className="flex gap-1.5">
-            {['all', 'email', 'linkedin', 'call'].map((ch) => (
+            {(['all', 'email', 'linkedin', 'call'] as const).map((ch) => (
               <button
                 key={ch}
                 onClick={() => setFilterChannel(ch)}
@@ -405,7 +412,7 @@ export function RepliesInbox() {
         {/* Classification filter */}
         <div className="flex items-center gap-1.5">
           <div className="flex gap-1.5">
-            {['all', 'interested', 'objection', 'neutral', 'ooo'].map((cls) => (
+            {(['all', 'interested', 'objection', 'neutral', 'ooo'] as const).map((cls) => (
               <button
                 key={cls}
                 onClick={() => setFilterClassification(cls)}
@@ -419,6 +426,21 @@ export function RepliesInbox() {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="relative min-w-[220px] flex-1 md:max-w-xs">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            value={searchQ}
+            onChange={(event) => setSearchQ(event.target.value)}
+            placeholder="Search lead, company, or reply text"
+            className="w-full rounded-lg border border-slate-800/60 bg-slate-900/50 py-2 pl-9 pr-3 text-sm text-white placeholder:text-slate-500 focus:border-cyan-500/60"
+          />
+        </div>
+
+        <div className="text-xs text-slate-500">
+          Showing {replies.length} of {total}
         </div>
 
         <div className="flex gap-2 ml-auto">
@@ -694,8 +716,8 @@ export function RepliesInbox() {
                 </label>
                 <input
                   type="email"
-                  value={logForm.lead_id}
-                  onChange={(e) => setLogForm({ ...logForm, lead_id: e.target.value })}
+                  value={logForm.lead_email}
+                  onChange={(e) => setLogForm({ ...logForm, lead_email: e.target.value })}
                   placeholder="search@example.com"
                   className="w-full px-3 py-2 rounded-lg bg-slate-800/30 border border-slate-800/60 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500"
                 />
@@ -707,7 +729,7 @@ export function RepliesInbox() {
                 </label>
                 <select
                   value={logForm.channel}
-                  onChange={(e) => setLogForm({ ...logForm, channel: e.target.value })}
+                  onChange={(e) => setLogForm({ ...logForm, channel: e.target.value as ReplyChannel })}
                   className="w-full px-3 py-2 rounded-lg bg-slate-800/30 border border-slate-800/60 text-white focus:outline-none focus:border-cyan-500"
                 >
                   <option value="email">Email</option>
@@ -735,7 +757,7 @@ export function RepliesInbox() {
                 onClick={() => {
                   setShowLogModal(false);
                   setLogForm({
-                    lead_id: '',
+                    lead_email: '',
                     channel: 'email',
                     reply_text: '',
                     source: 'manual_entry'
@@ -767,11 +789,11 @@ export function RepliesInbox() {
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   Channel
                 </label>
-                <select
-                  value={uploadChannel}
-                  onChange={(e) => setUploadChannel(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-800/30 border border-slate-800/60 text-white focus:outline-none focus:border-cyan-500"
-                >
+                  <select
+                    value={uploadChannel}
+                    onChange={(e) => setUploadChannel(e.target.value as ReplyChannel)}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-800/30 border border-slate-800/60 text-white focus:outline-none focus:border-cyan-500"
+                  >
                   <option value="email">Email</option>
                   <option value="linkedin">LinkedIn</option>
                   <option value="call">Call</option>
@@ -789,6 +811,18 @@ export function RepliesInbox() {
                   className="w-full px-3 py-2 rounded-lg bg-slate-800/30 border border-slate-800/60 text-slate-300 text-sm file:bg-slate-700 file:border-0 file:text-white file:font-medium file:cursor-pointer"
                 />
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/replies/sample-csv`;
+                  window.open(url, '_blank');
+                }}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-700/60 text-slate-400 hover:text-white text-xs font-medium transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download sample CSV
+              </button>
             </div>
 
             <div className="flex gap-3 mt-6">

@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import {
     listGTMContexts, createGTMContext, getGTMContext, updateGTMContext, generateGTMStrategy, refineFromEnrichment,
     parseGTMContextFiles, generateICPSuggestions, generateSourcingGuide,
-    listMissionICPs, createMissionICP, updateMissionICP, deleteMissionICP,
+    listMissionICPs, createMissionICP, updateMissionICP, deleteMissionICP, duplicateMissionICP,
     listAssets, createAsset, deleteAsset,
     type GTMContextSummary, type GTMContextDetail, type ICPSuggestion, type ICP, type SocialProofAsset
 } from '../services/api';
@@ -34,15 +34,6 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
     const [assets, setAssets] = useState<SocialProofAsset[]>([]);
     const [icpsLoading, setIcpsLoading] = useState(false);
     const [assetsLoading, setAssetsLoading] = useState(false);
-    const [showNewICPForm, setShowNewICPForm] = useState(false);
-    const [newICPName, setNewICPName] = useState('');
-    const [newICPStatement, setNewICPStatement] = useState('');
-    const [savingICP, setSavingICP] = useState(false);
-    const [showNewAssetForm, setShowNewAssetForm] = useState(false);
-    const [newAssetTitle, setNewAssetTitle] = useState('');
-    const [newAssetType, setNewAssetType] = useState('case_study');
-    const [newAssetContent, setNewAssetContent] = useState('');
-    const [savingAsset, setSavingAsset] = useState(false);
     const [refining, setRefining] = useState(false);
     const [tab, setTab] = useState<TabKey>('overview');
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -225,9 +216,33 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
         setGenerating(true);
         try {
             await generateGTMStrategy(selectedId);
-            toast.success('Strategy generated');
+            toast.success('Strategy generated — personas, triggers, signals, and plays created');
+
+            // Auto-generate ICPs after strategy — this fulfils the "ICP not auto-generated" spec issue
+            try {
+                const { data: icpSuggestionsData } = await generateICPSuggestions(selectedId);
+                const suggestions: ICPSuggestion[] = icpSuggestionsData.suggestions || [];
+                // Persist the top 2-3 suggestions as proper ICP records
+                for (const s of suggestions.slice(0, 3)) {
+                    await createMissionICP(selectedId, {
+                        name: s.icp_name,
+                        icp_statement: s.icp_statement,
+                        icp_priority: s.icp_priority || 'Primary',
+                        firmographic_range: s.firmographic_range || {},
+                        icp_rationale: s.icp_rationale || '',
+                        list_sourcing_guidance: s.list_sourcing_guidance || '',
+                    });
+                }
+                // Refresh ICP list
+                const { data: icpData } = await listMissionICPs(selectedId);
+                setMissionICPs(icpData.icps || []);
+                toast.success(`${suggestions.slice(0, 3).length} ICP${suggestions.length !== 1 ? 's' : ''} auto-generated`);
+            } catch {
+                // ICP generation failure is non-blocking — strategy succeeded
+            }
+
             await selectContext(selectedId);
-            setTab('personas');
+            setTab('icps');
         } catch (err: unknown) {
             toast.error(getErrorMessage(err, 'Generation failed'));
         } finally {
@@ -666,7 +681,7 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
                                             }}
                                         />
                                     )}
-                                    {tab === 'personas' && <Personas personas={detail.personas || []} />}
+                                    {tab === 'personas' && <Personas personas={detail.personas || []} missionId={selectedId || ''} onReload={() => { if (selectedId) void selectContext(selectedId); }} />}
                                     {tab === 'assets' && (
                                         <AssetsPanel
                                             assets={assets}
@@ -682,9 +697,9 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
                                             }}
                                         />
                                     )}
-                                    {tab === 'triggers' && <Triggers triggers={detail.triggers || []} />}
-                                    {tab === 'signals' && <Signals signals={detail.signal_definitions || []} />}
-                                    {tab === 'plays' && <Plays plays={detail.plays || []} />}
+                                    {tab === 'triggers' && <Triggers triggers={detail.triggers || []} missionId={selectedId || ''} onReload={() => { if (selectedId) void selectContext(selectedId); }} />}
+                                    {tab === 'signals' && <Signals signals={detail.signal_definitions || []} missionId={selectedId || ''} onReload={() => { if (selectedId) void selectContext(selectedId); }} />}
+                                    {tab === 'plays' && <Plays plays={detail.plays || []} missionId={selectedId || ''} onReload={() => { if (selectedId) void selectContext(selectedId); }} />}
                                     {tab === 'enrichment' && <Enrichment patterns={detail.enrichment_patterns} />}
                                 </div>
                             </div>
@@ -722,6 +737,25 @@ export function GTMIntelligence({ onICPGenerated, preferredContextId }: Props) {
 
 // ── ICP Panel ────────────────────────────────────────────────────────────────
 
+interface ICPFormState {
+    name: string;
+    icp_statement: string;
+    icp_priority: string;
+    icp_rationale: string;
+    list_sourcing_guidance: string;
+    employee_range: string;
+    revenue_range: string;
+    business_model: string;
+    geography: string;
+    use_cases: string;
+}
+
+const BLANK_ICP_FORM: ICPFormState = {
+    name: '', icp_statement: '', icp_priority: 'Primary', icp_rationale: '',
+    list_sourcing_guidance: '', employee_range: '', revenue_range: '',
+    business_model: '', geography: '', use_cases: '',
+};
+
 function ICPsPanel({
     missionId, icps, loading, onReload, onDelete,
 }: {
@@ -732,56 +766,214 @@ function ICPsPanel({
     onDelete: (id: string) => Promise<void>;
 }) {
     const [showForm, setShowForm] = useState(false);
-    const [name, setName] = useState('');
-    const [statement, setStatement] = useState('');
-    const [priority, setPriority] = useState('Primary');
+    const [form, setForm] = useState<ICPFormState>(BLANK_ICP_FORM);
     const [saving, setSaving] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editForm, setEditForm] = useState<ICPFormState>(BLANK_ICP_FORM);
+    const [duplicating, setDuplicating] = useState<string | null>(null);
+
+    const formToPayload = (f: ICPFormState) => ({
+        name: f.name,
+        icp_statement: f.icp_statement,
+        icp_priority: f.icp_priority,
+        icp_rationale: f.icp_rationale,
+        list_sourcing_guidance: f.list_sourcing_guidance,
+        firmographic_range: {
+            employee_range: f.employee_range,
+            revenue_range: f.revenue_range,
+            business_model: f.business_model,
+            geography: f.geography,
+        },
+        use_cases: f.use_cases ? f.use_cases.split(',').map((s) => s.trim()).filter(Boolean) : [],
+    });
+
+    const icpToForm = (icp: ICP): ICPFormState => ({
+        name: icp.name,
+        icp_statement: icp.icp_statement || '',
+        icp_priority: icp.icp_priority || 'Primary',
+        icp_rationale: icp.icp_rationale || '',
+        list_sourcing_guidance: icp.list_sourcing_guidance || '',
+        employee_range: (icp.firmographic_range?.employee_range as string) || '',
+        revenue_range: (icp.firmographic_range?.revenue_range as string) || '',
+        business_model: (icp.firmographic_range?.business_model as string) || '',
+        geography: (icp.firmographic_range?.geography as string) || (icp.geography || ''),
+        use_cases: (icp.use_cases || []).join(', '),
+    });
 
     const handleCreate = async () => {
-        if (!name.trim()) return;
+        if (!form.name.trim()) return;
         setSaving(true);
         try {
-            await createMissionICP(missionId, { name, icp_statement: statement, icp_priority: priority });
-            setName(''); setStatement(''); setShowForm(false);
+            await createMissionICP(missionId, formToPayload(form));
+            setForm(BLANK_ICP_FORM);
+            setShowForm(false);
             await onReload();
             toast.success('ICP created');
         } catch { toast.error('Failed to create ICP'); } finally { setSaving(false); }
     };
 
+    const handleUpdate = async () => {
+        if (!editingId || !editForm.name.trim()) return;
+        setSaving(true);
+        try {
+            await updateMissionICP(missionId, editingId, formToPayload(editForm));
+            setEditingId(null);
+            await onReload();
+            toast.success('ICP updated');
+        } catch { toast.error('Failed to update ICP'); } finally { setSaving(false); }
+    };
+
+    const handleDuplicate = async (icp: ICP) => {
+        setDuplicating(icp.id);
+        try {
+            await duplicateMissionICP(missionId, icp.id);
+            await onReload();
+            toast.success('ICP duplicated');
+        } catch { toast.error('Failed to duplicate ICP'); } finally { setDuplicating(null); }
+    };
+
+    const PriorityBadge = ({ p }: { p: string }) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+            p === 'Primary' ? 'bg-emerald-500/15 text-emerald-400' :
+            p === 'Secondary' ? 'bg-amber-500/15 text-amber-400' :
+            'bg-slate-500/15 text-slate-400'
+        }`}>{p}</span>
+    );
+
+    const ICPFormFields = ({ f, setF }: { f: ICPFormState; setF: (v: ICPFormState) => void }) => (
+        <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+                <div>
+                    <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">Name *</label>
+                    <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Series B SaaS VP Sales" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                </div>
+                <div>
+                    <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">Priority</label>
+                    <select value={f.icp_priority} onChange={(e) => setF({ ...f, icp_priority: e.target.value })} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none">
+                        <option>Primary</option><option>Secondary</option><option>Experimental</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">ICP Statement</label>
+                <textarea value={f.icp_statement} onChange={(e) => setF({ ...f, icp_statement: e.target.value })} placeholder="Precise one-line definition of who you target…" rows={2} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
+            </div>
+            <p className="text-[10px] uppercase text-slate-500 font-semibold tracking-wider">Firmographics</p>
+            <div className="grid grid-cols-2 gap-3">
+                <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Employee Range</label>
+                    <input value={f.employee_range} onChange={(e) => setF({ ...f, employee_range: e.target.value })} placeholder="e.g. 50–500" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                </div>
+                <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Revenue Range</label>
+                    <input value={f.revenue_range} onChange={(e) => setF({ ...f, revenue_range: e.target.value })} placeholder="e.g. $5M–$50M ARR" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                </div>
+                <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Business Model</label>
+                    <input value={f.business_model} onChange={(e) => setF({ ...f, business_model: e.target.value })} placeholder="e.g. B2B SaaS" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                </div>
+                <div>
+                    <label className="block text-[10px] text-slate-500 mb-1">Geography</label>
+                    <input value={f.geography} onChange={(e) => setF({ ...f, geography: e.target.value })} placeholder="e.g. US, Canada" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+                </div>
+            </div>
+            <div>
+                <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">Use Cases <span className="normal-case font-normal">(comma-separated)</span></label>
+                <input value={f.use_cases} onChange={(e) => setF({ ...f, use_cases: e.target.value })} placeholder="e.g. Outbound automation, Account research" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
+            </div>
+            <div>
+                <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">Rationale</label>
+                <textarea value={f.icp_rationale} onChange={(e) => setF({ ...f, icp_rationale: e.target.value })} placeholder="Why this segment? What makes them ideal buyers…" rows={2} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
+            </div>
+            <div>
+                <label className="block text-[10px] uppercase text-slate-500 font-semibold mb-1">List Sourcing Guidance</label>
+                <textarea value={f.list_sourcing_guidance} onChange={(e) => setF({ ...f, list_sourcing_guidance: e.target.value })} placeholder="Apollo filters, LinkedIn boolean, Clay enrichment logic…" rows={2} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
+            </div>
+        </div>
+    );
+
     if (loading) return <div className="py-8 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto" /></div>;
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold text-white">ICPs ({icps.length})</p>
-                <button onClick={() => setShowForm((v) => !v)} className="rounded-xl bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20">+ New ICP</button>
+                <button onClick={() => { setShowForm((v) => !v); setEditingId(null); }} className="rounded-xl bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/20">
+                    {showForm ? 'Cancel' : '+ New ICP'}
+                </button>
             </div>
+
             {showForm && (
-                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 space-y-3">
-                    <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ICP name" className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40" />
-                    <textarea value={statement} onChange={(e) => setStatement(e.target.value)} placeholder="ICP statement…" rows={2} className="w-full rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500/40 resize-none" />
-                    <select value={priority} onChange={(e) => setPriority(e.target.value)} className="rounded-xl bg-[#0A0F1E] border border-slate-700/60 px-3 py-2 text-sm text-white outline-none">
-                        <option>Primary</option><option>Secondary</option><option>Experimental</option>
-                    </select>
-                    <div className="flex gap-2">
-                        <button onClick={() => void handleCreate()} disabled={saving || !name.trim()} className="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50">{saving ? '…' : 'Create'}</button>
-                        <button onClick={() => setShowForm(false)} className="rounded-xl border border-slate-800/60 px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+                <div className="rounded-2xl border border-cyan-500/20 bg-[#10172B] p-4 space-y-3">
+                    <p className="text-xs font-semibold text-cyan-300">New ICP</p>
+                    <ICPFormFields f={form} setF={setForm} />
+                    <div className="flex gap-2 pt-1">
+                        <button onClick={() => void handleCreate()} disabled={saving || !form.name.trim()} className="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50">{saving ? '…' : 'Create'}</button>
+                        <button onClick={() => { setShowForm(false); setForm(BLANK_ICP_FORM); }} className="rounded-xl border border-slate-800/60 px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
                     </div>
                 </div>
             )}
+
             {icps.length === 0 ? (
-                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-8 text-center text-slate-500">No ICPs yet. Create one to link personas and plays.</div>
+                <div className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-8 text-center text-slate-500">No ICPs yet. Create one or generate strategy to auto-populate.</div>
             ) : (
                 <div className="space-y-3">
                     {icps.map((icp) => (
-                        <div key={icp.id} className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4 flex items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="font-semibold text-white text-sm">{icp.name}</span>
-                                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${icp.icp_priority === 'Primary' ? 'bg-emerald-500/15 text-emerald-400' : icp.icp_priority === 'Secondary' ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-500/15 text-slate-400'}`}>{icp.icp_priority}</span>
+                        <div key={icp.id} className="rounded-2xl border border-slate-800/60 bg-[#10172B] p-4">
+                            {editingId === icp.id ? (
+                                <div className="space-y-3">
+                                    <p className="text-xs font-semibold text-cyan-300">Editing: {icp.name}</p>
+                                    <ICPFormFields f={editForm} setF={setEditForm} />
+                                    <div className="flex gap-2 pt-1">
+                                        <button onClick={() => void handleUpdate()} disabled={saving || !editForm.name.trim()} className="rounded-xl bg-cyan-500/15 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50">{saving ? '…' : 'Save'}</button>
+                                        <button onClick={() => setEditingId(null)} className="rounded-xl border border-slate-800/60 px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+                                    </div>
                                 </div>
-                                {icp.icp_statement && <p className="text-xs text-slate-400">{icp.icp_statement}</p>}
-                            </div>
-                            <button onClick={() => void onDelete(icp.id)} className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">✕</button>
+                            ) : (
+                                <div className="flex items-start gap-3">
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                            <span className="font-semibold text-white text-sm">{icp.name}</span>
+                                            <PriorityBadge p={icp.icp_priority} />
+                                        </div>
+                                        {icp.icp_statement && <p className="text-xs text-slate-400 mb-2">{icp.icp_statement}</p>}
+                                        {(icp.firmographic_range && Object.keys(icp.firmographic_range).length > 0) && (
+                                            <div className="flex flex-wrap gap-2 mb-2">
+                                                {Object.entries(icp.firmographic_range).map(([k, v]) => v ? (
+                                                    <span key={k} className="rounded-full bg-slate-800/80 border border-slate-700/40 px-2 py-0.5 text-[10px] text-slate-300">
+                                                        {k.replace(/_/g, ' ')}: {String(v)}
+                                                    </span>
+                                                ) : null)}
+                                            </div>
+                                        )}
+                                        {(icp.use_cases || []).length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {(icp.use_cases || []).map((uc) => (
+                                                    <span key={uc} className="rounded-full bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300">{uc}</span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                            onClick={() => { setEditingId(icp.id); setEditForm(icpToForm(icp)); setShowForm(false); }}
+                                            className="rounded-lg p-1.5 text-slate-500 hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors text-xs"
+                                            title="Edit"
+                                        >✎</button>
+                                        <button
+                                            onClick={() => void handleDuplicate(icp)}
+                                            disabled={duplicating === icp.id}
+                                            className="rounded-lg p-1.5 text-slate-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors text-xs disabled:opacity-50"
+                                            title="Duplicate"
+                                        >{duplicating === icp.id ? '…' : '⧉'}</button>
+                                        <button
+                                            onClick={() => void onDelete(icp.id)}
+                                            className="rounded-lg p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors text-xs"
+                                            title="Delete"
+                                        >✕</button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ))}
                 </div>

@@ -22,6 +22,11 @@ from models import (
     ICP, ICPCreate, ICPUpdate,
 )
 from datetime import datetime
+from services.icp_sync import (
+    ensure_embedded_context_icp,
+    sync_context_icp_state,
+    sync_mission_icp_definition,
+)
 
 router = APIRouter(prefix="/gtm", tags=["gtm-intelligence"])
 
@@ -65,6 +70,8 @@ def _serialize_play(p: GTMPlay) -> dict:
 
 
 def _full_context(ctx: GTMContext, session: Session) -> dict:
+    ensure_embedded_context_icp(session, ctx)
+    sync_context_icp_state(ctx, session)
     personas = session.exec(select(Persona).where(Persona.gtm_context_id == ctx.id)).all()
     triggers = session.exec(select(BuyingTrigger).where(BuyingTrigger.gtm_context_id == ctx.id)).all()
     signal_defs = session.exec(select(SignalDefinition).where(SignalDefinition.gtm_context_id == ctx.id)).all()
@@ -93,6 +100,10 @@ def list_contexts(
         .where(GTMContext.workspace_id == workspace_id)
         .order_by(GTMContext.created_at.desc())
     ).all()
+    for ctx in ctxs:
+        ensure_embedded_context_icp(session, ctx)
+        sync_context_icp_state(ctx, session)
+    session.commit()
     result = []
     for ctx in ctxs:
         personas = session.exec(select(Persona).where(Persona.gtm_context_id == ctx.id)).all()
@@ -119,6 +130,10 @@ def create_context(
     session.add(ctx)
     session.commit()
     session.refresh(ctx)
+    ensure_embedded_context_icp(session, ctx)
+    sync_context_icp_state(ctx, session)
+    session.commit()
+    session.refresh(ctx)
     return _full_context(ctx, session)
 
 
@@ -131,6 +146,10 @@ def get_context(
     ctx = session.get(GTMContext, ctx_id)
     if not ctx or ctx.workspace_id != workspace_id:
         raise HTTPException(404, "GTM context not found")
+    ensure_embedded_context_icp(session, ctx)
+    sync_context_icp_state(ctx, session)
+    session.commit()
+    session.refresh(ctx)
     return _full_context(ctx, session)
 
 
@@ -151,6 +170,9 @@ def update_context(
         setattr(ctx, k, v)
     ctx.updated_at = datetime.utcnow()
     session.add(ctx)
+    session.commit()
+    ensure_embedded_context_icp(session, ctx)
+    sync_context_icp_state(ctx, session)
     session.commit()
     session.refresh(ctx)
     return _full_context(ctx, session)
@@ -270,6 +292,25 @@ def delete_persona(
     return {"status": "deleted"}
 
 
+@router.patch("/personas/{persona_id}")
+def update_persona(
+    persona_id: uuid.UUID,
+    data: dict,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    p = session.get(Persona, persona_id)
+    if not p or p.workspace_id != workspace_id:
+        raise HTTPException(404, "Persona not found")
+    for k, v in data.items():
+        if hasattr(p, k):
+            setattr(p, k, v)
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _serialize_persona(p)
+
+
 # ─── Buying Triggers CRUD ────────────────────────────────────
 
 @router.post("/{ctx_id}/triggers")
@@ -301,6 +342,25 @@ def delete_trigger(
     session.delete(t)
     session.commit()
     return {"status": "deleted"}
+
+
+@router.patch("/triggers/{trigger_id}")
+def update_trigger(
+    trigger_id: uuid.UUID,
+    data: dict,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    t = session.get(BuyingTrigger, trigger_id)
+    if not t or t.workspace_id != workspace_id:
+        raise HTTPException(404, "Trigger not found")
+    for k, v in data.items():
+        if hasattr(t, k):
+            setattr(t, k, v)
+    session.add(t)
+    session.commit()
+    session.refresh(t)
+    return _serialize_trigger(t)
 
 
 # ─── Signal Definitions CRUD ─────────────────────────────────
@@ -342,6 +402,25 @@ def delete_signal_def(
     session.delete(s)
     session.commit()
     return {"status": "deleted"}
+
+
+@router.patch("/signals/{signal_id}")
+def update_signal(
+    signal_id: uuid.UUID,
+    data: dict,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    s = session.get(SignalDefinition, signal_id)
+    if not s or s.workspace_id != workspace_id:
+        raise HTTPException(404, "Signal not found")
+    for k, v in data.items():
+        if hasattr(s, k):
+            setattr(s, k, v)
+    session.add(s)
+    session.commit()
+    session.refresh(s)
+    return _serialize_signal_def(s)
 
 
 # ─── GTM Plays CRUD ──────────────────────────────────────────
@@ -1018,7 +1097,13 @@ def create_icp_for_mission(
 ):
     """Create a new ICP linked to a mission."""
     ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
+    existing_icps = session.exec(
+        select(ICP)
+        .where(ICP.workspace_id == workspace_id)
+        .where(ICP.mission_id == ctx.id)
+    ).all()
     icp = ICP(
+        id=(ctx.icp_id if not existing_icps and ctx.icp_id else uuid.uuid4()),
         workspace_id=workspace_id,
         mission_id=ctx.id,
         name=payload.name,
@@ -1033,6 +1118,9 @@ def create_icp_for_mission(
         icp_rationale=payload.icp_rationale or "",
     )
     session.add(icp)
+    session.flush()
+    sync_mission_icp_definition(icp, ctx, session)
+    sync_context_icp_state(ctx, session)
     session.commit()
     session.refresh(icp)
     return _serialize_icp(icp)
@@ -1060,11 +1148,13 @@ def update_icp_for_mission(
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     """Update an ICP."""
-    _get_ctx_or_404(ctx_id, workspace_id, session)
+    ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
     icp = _get_icp_or_404(icp_id, workspace_id, session)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(icp, field, value)
     session.add(icp)
+    sync_mission_icp_definition(icp, ctx, session)
+    sync_context_icp_state(ctx, session)
     session.commit()
     session.refresh(icp)
     return _serialize_icp(icp)
@@ -1078,11 +1168,55 @@ def delete_icp_for_mission(
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
     """Delete an ICP."""
-    _get_ctx_or_404(ctx_id, workspace_id, session)
+    ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
     icp = _get_icp_or_404(icp_id, workspace_id, session)
+    legacy = session.get(ICPDefinition, icp.id)
+    if legacy:
+        session.delete(legacy)
     session.delete(icp)
+    session.flush()
+    next_primary = sync_context_icp_state(ctx, session)
+    if not next_primary:
+        ctx.icp_id = None
+        ctx.icp_name = ""
+        ctx.icp_statement = ""
+        ctx.icp_priority = "Primary"
+        ctx.icp_rationale = ""
+        ctx.list_sourcing_guidance = ""
+        session.add(ctx)
     session.commit()
     return {"deleted": True}
+
+
+@router.post("/{ctx_id}/icps/{icp_id}/duplicate", response_model=dict)
+def duplicate_icp_for_mission(
+    ctx_id: str,
+    icp_id: str,
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    """Duplicate an ICP."""
+    ctx = _get_ctx_or_404(ctx_id, workspace_id, session)
+    source = _get_icp_or_404(icp_id, workspace_id, session)
+    new_icp = ICP(
+        id=uuid.uuid4(),
+        workspace_id=workspace_id,
+        mission_id=ctx.id,
+        name=source.name + " (copy)",
+        industry=source.industry,
+        company_size=source.company_size,
+        geography=source.geography,
+        use_cases=source.use_cases or [],
+        firmographic_range=source.firmographic_range or {},
+        icp_statement=source.icp_statement,
+        icp_priority="Secondary",
+        list_sourcing_guidance=source.list_sourcing_guidance or "",
+        icp_rationale=source.icp_rationale or "",
+    )
+    session.add(new_icp)
+    session.commit()
+    session.refresh(new_icp)
+    return _serialize_icp(new_icp)
 
 
 # ── ICP helpers ────────────────────────────────────────────────────────────────

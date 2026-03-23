@@ -3,6 +3,14 @@
 :root {
   --font-body: 'Manrope', system-ui, -apple-system, sans-serif;
   --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --app-bg: #090d0b;
+  --app-panel: rgba(13, 18, 17, 0.92);
+  --app-panel-strong: rgba(15, 22, 19, 0.96);
+  --app-line: rgba(148, 163, 184, 0.14);
+  --app-accent: #74f04c;
+  --app-accent-soft: rgba(116, 240, 76, 0.12);
+  --app-text: #f1f5f0;
+  --app-muted: #98a2a0;
 }
 
 * {
@@ -15,51 +23,79 @@ html {
 
 body {
   background:
-    radial-gradient(1200px 800px at 10% -10%, rgba(14, 165, 233, 0.18), transparent 60%),
-    radial-gradient(1000px 700px at 95% 0%, rgba(59, 130, 246, 0.16), transparent 55%),
-    radial-gradient(800px 600px at 50% 120%, rgba(16, 185, 129, 0.08), transparent 55%),
-    #0A0F1E;
-  color: #F1F5F9;
+    radial-gradient(900px 620px at 14% -8%, rgba(116, 240, 76, 0.09), transparent 58%),
+    radial-gradient(760px 520px at 100% 0%, rgba(255, 255, 255, 0.04), transparent 58%),
+    #0a0f0d;
+  color: var(--app-text);
   margin: 0;
+  min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-h1, h2, h3, h4, .font-display {
+#__next {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
   font-family: var(--font-display);
   letter-spacing: -0.01em;
 }
 
-/* ── Scrollbar ─────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.15);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.16);
+  border-radius: 999px;
 }
 
-/* ── Animations ────────────────────────────────────────── */
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.26);
+}
+
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes slideUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes pulse-slow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .animate-in {
@@ -70,19 +106,23 @@ h1, h2, h3, h4, .font-display {
   animation: fadeIn 0.3s ease-out;
 }
 
-/* ── Focus states ──────────────────────────────────────── */
-input:focus, textarea:focus, select:focus, button:focus-visible {
+input:focus,
+textarea:focus,
+select:focus,
+button:focus-visible {
   outline: none;
 }
 
-/* ── Selection ─────────────────────────────────────────── */
 ::selection {
-  background: rgba(34, 211, 238, 0.3);
-  color: white;
+  background: rgba(116, 240, 76, 0.24);
+  color: #041006;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
@@ -90,7 +130,6 @@ input:focus, textarea:focus, select:focus, button:focus-visible {
   }
 }
 
-/* ── Line clamp ────────────────────────────────────────── */
 .line-clamp-1 {
   overflow: hidden;
   display: -webkit-box;
@@ -103,4 +142,27 @@ input:focus, textarea:focus, select:focus, button:focus-visible {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.app-panel {
+  background: linear-gradient(180deg, rgba(16, 22, 20, 0.92), rgba(11, 16, 14, 0.95));
+  border: 1px solid var(--app-line);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+
+.app-panel-strong {
+  background: linear-gradient(180deg, rgba(17, 24, 21, 0.96), rgba(10, 14, 12, 0.98));
+  border: 1px solid rgba(116, 240, 76, 0.14);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.30);
+}
+
+.app-pill {
+  border: 1px solid rgba(116, 240, 76, 0.18);
+  background: rgba(116, 240, 76, 0.08);
+  color: #d9ffd0;
+}
+
+.app-logo-frame {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
 }

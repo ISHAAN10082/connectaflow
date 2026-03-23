@@ -3,15 +3,14 @@ import {
   BarChart3, Mail, Linkedin, Phone, RefreshCw, Upload, Download,
   TrendingUp, Users, MessageSquare, Calendar, CheckCircle2,
   AlertCircle, ExternalLink, UserCheck, Layers, FileText,
-  ChevronDown, ChevronRight, Briefcase, Bot,
+  ChevronRight, Briefcase,
 } from 'lucide-react';
 import {
   getOutcomesSummary, getOutcomesByChannel, getOutcomesByTier,
   getOutcomesByPlay, getOutcomesByPersona,
   syncSmartlead, getSmartleadStats,
-  uploadLinkedinCSV, uploadCallsCSV,
-  downloadLinkedinTemplate, downloadCallsTemplate,
-  getMeetingBrief,
+  uploadLinkedinCSV, uploadCallsCSV, uploadEmailCSV,
+  downloadLinkedinTemplate, downloadCallsTemplate, downloadEmailTemplate,
   OutcomesSummary, OutcomesByChannel, SmartleadStats, MeetingBrief,
 } from '../services/api';
 import { toast } from 'sonner';
@@ -48,9 +47,8 @@ export function OutcomesDashboard() {
   const [syncing, setSyncing] = useState(false);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   // Meeting Brief modal
-  const [briefLeadId, setBriefLeadId] = useState<string | null>(null);
-  const [brief, setBrief] = useState<MeetingBrief | null>(null);
-  const [briefLoading, setBriefLoading] = useState(false);
+  const [brief] = useState<MeetingBrief | null>(null);
+  const [briefLoading] = useState(false);
   const [showBrief, setShowBrief] = useState(false);
 
   const loadData = useCallback(async () => {
@@ -117,18 +115,15 @@ export function OutcomesDashboard() {
     }
   };
 
-  const openMeetingBrief = async (leadId: string) => {
-    setBriefLeadId(leadId);
-    setShowBrief(true);
-    setBriefLoading(true);
-    setBrief(null);
+  const handleEmailUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     try {
-      const { data } = await getMeetingBrief(leadId);
-      setBrief(data);
-    } catch {
-      toast.error('No meeting brief found. Generate one from the Lead record first.');
-    } finally {
-      setBriefLoading(false);
+      await uploadEmailCSV(file);
+      toast.success('Email CSV uploaded successfully');
+      loadData();
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to upload email CSV'));
     }
   };
 
@@ -436,6 +431,31 @@ export function OutcomesDashboard() {
           ) : (
             <EmptyState msg="No Smartlead data. Configure your API key in workspace settings and sync." />
           )}
+
+          {/* Manual Email CSV Upload */}
+          <div className="bg-[#10172B] rounded-2xl border border-slate-800/60 p-5 mt-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Manual Email Data</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Upload a CSV to log email outcomes not tracked by Smartlead</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => downloadEmailTemplate()}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-700/60 text-slate-400 hover:text-white text-xs font-medium transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Sample CSV
+                </button>
+                <label className="inline-flex items-center gap-2 cursor-pointer px-3 py-2 rounded-xl bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/20 text-xs font-semibold transition-colors">
+                  <Upload className="w-3.5 h-3.5" />
+                  Upload CSV
+                  <input type="file" accept=".csv" className="hidden" onChange={handleEmailUpload} />
+                </label>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500">Format: lead_email, lead_name, company, date, status, notes</p>
+          </div>
         </div>
       )}
 

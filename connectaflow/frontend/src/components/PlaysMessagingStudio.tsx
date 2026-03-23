@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import {
   Plus,
@@ -8,12 +8,9 @@ import {
   RefreshCw,
   Wand2,
   Mail,
-  ChevronDown,
-  ChevronRight,
   Copy,
   Check,
   X,
-  Edit3,
   Save,
   BookOpen,
 } from 'lucide-react';
@@ -34,8 +31,8 @@ import api, {
   addPlayVariation,
   deletePlayVariation,
   MessagingPlay,
+  PersonaData,
   PlayComponent,
-  PlayVariation,
   EmailVariant,
   listGTMContexts,
   GTMContextSummary,
@@ -69,7 +66,7 @@ export function PlaysMessagingStudio() {
     persona_id: '',
     icp_id: '',
   });
-  const [personas, setPersonas] = useState<any[]>([]);
+  const [personas, setPersonas] = useState<PersonaData[]>([]);
   const [icps, setIcps] = useState<ICP[]>([]);
   const [copiedVariantId, setCopiedVariantId] = useState<string | null>(null);
   const [editingPlayName, setEditingPlayName] = useState(false);
@@ -143,8 +140,13 @@ export function PlaysMessagingStudio() {
       try {
         setLoading(true);
         const { data } = await listMessagingPlays(selectedMissionId);
-        setPlays(data.plays || []);
-        setSelectedPlay(null);
+        const nextPlays = data.plays || [];
+        setPlays(nextPlays);
+        setSelectedPlay((current) => {
+          if (!nextPlays.length) return null;
+          if (!current) return nextPlays[0];
+          return nextPlays.find((play) => play.id === current.id) || nextPlays[0];
+        });
       } catch (error) {
         toast.error(`Failed to load plays: ${getErrorMessage(error, 'Unknown error')}`);
       } finally {
@@ -155,13 +157,15 @@ export function PlaysMessagingStudio() {
   }, [selectedMissionId]);
 
   // Fetch full play detail when selected play changes
+  const selectedPlayId = selectedPlay?.id ?? null;
+
   useEffect(() => {
-    if (!selectedPlay) return;
+    if (!selectedPlayId) return;
 
     const fetchPlayDetail = async () => {
       try {
         setLoading(true);
-        const { data: detail } = await getMessagingPlay(selectedPlay.id);
+        const { data: detail } = await getMessagingPlay(selectedPlayId);
         setSelectedPlay(detail);
         setGlobalInstruction(detail.global_instruction || '');
         setEditingPlayName(false);
@@ -172,7 +176,7 @@ export function PlaysMessagingStudio() {
       }
     };
     fetchPlayDetail();
-  }, [selectedPlay?.id]);
+  }, [selectedPlayId]);
 
   const handleCreatePlay = async () => {
     if (!selectedMissionId || !newPlayForm.name || !newPlayForm.persona_id) {
@@ -320,7 +324,7 @@ export function PlaysMessagingStudio() {
       await navigator.clipboard.writeText(text);
       setCopiedVariantId(variant.id);
       setTimeout(() => setCopiedVariantId(null), 2000);
-    } catch (error) {
+    } catch {
       toast.error('Failed to copy to clipboard');
     }
   };
@@ -362,7 +366,6 @@ export function PlaysMessagingStudio() {
     return icp?.name || icpId;
   };
 
-  const selectedMission = missions.find((m) => m.id === selectedMissionId);
   const componentCount = selectedPlay?.components?.length || 0;
   const componentMap: Record<string, PlayComponent> = {};
   if (selectedPlay?.components) {
@@ -370,433 +373,419 @@ export function PlaysMessagingStudio() {
       componentMap[comp.component_type] = comp;
     });
   }
+  const filteredAssets = assets.filter((asset) => assetFilter === 'all' || asset.type === assetFilter);
+  const selectedMissionName = missions.find((mission) => mission.id === selectedMissionId)?.name || 'Select mission';
 
   return (
-    <div className="flex h-full bg-[#0A0F1E]">
-      {/* Left Panel */}
-      <div className="w-72 shrink-0 flex flex-col border-r border-slate-800/60 bg-[#0D1224]">
-        {/* Header */}
-        <div className="p-4 border-b border-slate-800/60 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Messaging Plays</h2>
+    <div className="flex h-full min-w-0 flex-col bg-[#0A0F1E]">
+      <div className="border-b border-slate-800/60 bg-[#0D1224] px-5 py-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Messaging</p>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <h2 className="truncate text-lg font-semibold text-white">{selectedMissionName}</h2>
+              <span className="rounded-full border border-slate-700/80 bg-[#11182d] px-3 py-1 text-xs font-medium text-slate-300">
+                {plays.length} play{plays.length === 1 ? '' : 's'}
+              </span>
+            </div>
+          </div>
+
+          <div className="min-w-[220px] flex-1 md:max-w-xs">
+            <select
+              value={selectedMissionId || ''}
+              onChange={(e) => setSelectedMissionId(e.target.value)}
+              className="w-full rounded-xl border border-slate-800/60 bg-[#11182d] px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-500/60"
+            >
+              <option value="">Select mission</option>
+              {missions.map((mission) => (
+                <option key={mission.id} value={mission.id}>
+                  {mission.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button
             onClick={() => setShowNewPlayModal(true)}
-            className="p-2 rounded-lg hover:bg-[#10172B] text-cyan-500 transition-colors"
-            title="Create new play"
+            className="inline-flex items-center gap-2 rounded-xl bg-cyan-500/14 px-4 py-2.5 text-sm font-semibold text-cyan-300 transition hover:bg-cyan-500/20"
           >
-            <Plus size={18} />
+            <Plus size={16} />
+            Create play
           </button>
-        </div>
-
-        {/* Plays List */}
-        <div className="flex-1 overflow-y-auto">
-          {plays.length === 0 ? (
-            <div className="p-4 text-center text-slate-400 text-sm">
-              No plays created yet. Create one to get started.
-            </div>
-          ) : (
-            <div className="space-y-2 p-3">
-              {plays.map((play) => (
-                <div
-                  key={play.id}
-                  onClick={() => setSelectedPlay(play)}
-                  className={`p-3 rounded-lg cursor-pointer transition-colors group ${
-                    selectedPlay?.id === play.id
-                      ? 'bg-[#10172B] border border-cyan-500/30'
-                      : 'bg-[#0D1224] border border-slate-800/60 hover:bg-[#10172B]'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-white truncate">
-                        {play.name}
-                      </p>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        <span className="text-xs px-2 py-1 rounded bg-cyan-500/20 text-cyan-400">
-                          {getPersonaName(play.persona_id)}
-                        </span>
-                        {play.icp_id && (
-                          <span className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400">
-                            {getICPName(play.icp_id)}
-                          </span>
-                        )}
-                        <span
-                          className={`text-xs px-2 py-1 rounded font-semibold ${
-                            play.status === 'active'
-                              ? 'bg-emerald-500/20 text-emerald-400'
-                              : play.status === 'archived'
-                                ? 'bg-amber-500/20 text-amber-400'
-                                : 'bg-slate-500/20 text-slate-400'
-                          }`}
-                        >
-                          {play.status || 'draft'}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeletePlay(play.id);
-                      }}
-                      className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-red-400 transition-all"
-                      title="Delete play"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
-      {/* Right Panel */}
-      <div className="flex-1 flex flex-col bg-[#0A0F1E] overflow-hidden">
-        {!selectedPlay ? (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <Mail size={48} className="mx-auto text-slate-600 mb-4" />
-              <p className="text-slate-400 mb-2">Select a play or create a new one</p>
-              <button
-                onClick={() => setShowNewPlayModal(true)}
-                className="mt-4 px-4 py-2 rounded-lg bg-cyan-500/20 text-cyan-400 hover:bg-cyan-500/30 transition-colors flex items-center gap-2 mx-auto"
-              >
-                <Plus size={16} />
-                Create Play
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col h-full overflow-hidden">
-            {/* Play Header */}
-            <div className="p-6 border-b border-slate-800/60 flex-shrink-0">
-              <div className="flex items-center gap-3 mb-3">
-                {editingPlayName ? (
-                  <div className="flex items-center gap-2 flex-1">
-                    <input
-                      type="text"
-                      value={editedPlayName}
-                      onChange={(e) => setEditedPlayName(e.target.value)}
-                      className="flex-1 px-3 py-2 rounded bg-[#10172B] border border-slate-800/60 text-white text-xl font-semibold focus:outline-none focus:border-cyan-500/60"
-                      autoFocus
-                    />
-                    <button
-                      onClick={handleSavePlayName}
-                      disabled={savingPlayName}
-                      className="p-2 rounded hover:bg-[#10172B] text-cyan-500 transition-colors"
-                    >
-                      <Save size={18} />
-                    </button>
-                    <button
-                      onClick={() => setEditingPlayName(false)}
-                      className="p-2 rounded hover:bg-[#10172B] text-slate-400 transition-colors"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                ) : (
-                  <h2
-                    onClick={() => {
-                      setEditingPlayName(true);
-                      setEditedPlayName(selectedPlay.name);
-                    }}
-                    className="text-2xl font-semibold text-white cursor-pointer hover:text-cyan-400 transition-colors flex-1"
-                  >
-                    {selectedPlay.name}
-                  </h2>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <span className="text-xs px-3 py-1.5 rounded bg-cyan-500/20 text-cyan-400 font-medium">
-                  {getPersonaName(selectedPlay.persona_id)}
-                </span>
-                {selectedPlay.icp_id && (
-                  <span className="text-xs px-3 py-1.5 rounded bg-blue-500/20 text-blue-400 font-medium">
-                    {getICPName(selectedPlay.icp_id)}
-                  </span>
-                )}
-              </div>
+      <div className="flex min-h-0 flex-1 flex-col xl:flex-row">
+        <aside className="border-b border-slate-800/60 bg-[#0D1224] xl:w-80 xl:shrink-0 xl:border-b-0 xl:border-r">
+          <div className="p-3">
+            <div className="mb-2 flex items-center justify-between px-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Plays</p>
+              <span className="text-xs text-slate-500">{plays.length} total</span>
             </div>
 
-            {/* Global Instruction Bar */}
-            <div className="px-6 py-4 border-b border-slate-800/60 flex-shrink-0 flex gap-3">
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-slate-400 mb-2 uppercase">
-                  Global Instruction
-                </label>
-                <input
-                  type="text"
-                  value={globalInstruction}
-                  onChange={(e) => setGlobalInstruction(e.target.value)}
-                  placeholder="Add guidance for all message variations..."
-                  className="w-full px-3 py-2 rounded bg-[#10172B] border border-slate-800/60 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/60"
-                />
-              </div>
-              {componentCount > 0 && (
-                <button
-                  onClick={handleRegenerateAll}
-                  disabled={generating}
-                  className="mt-6 px-4 py-2 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors flex items-center gap-2 font-medium text-sm disabled:opacity-50"
-                >
-                  <RefreshCw size={16} className={generating ? 'animate-spin' : ''} />
-                  Regenerate All
-                </button>
-              )}
-            </div>
-
-            {/* Main Content */}
-            <div className="flex-1 overflow-y-auto">
-              {componentCount === 0 ? (
-                <div className="p-6 flex flex-col items-center justify-center h-full">
-                  <Wand2 size={48} className="text-slate-600 mb-4" />
-                  <p className="text-slate-400 mb-4 text-center">
-                    No messaging components yet. Generate them to get started.
-                  </p>
-                  <button
-                    onClick={handleGenerateMessaging}
-                    disabled={generating}
-                    className="px-6 py-3 rounded-lg bg-cyan-500 text-white hover:bg-cyan-600 transition-colors font-semibold flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <Wand2 size={18} />
-                    Generate Messaging
-                  </button>
+            <div className="max-h-[260px] space-y-2 overflow-y-auto xl:max-h-none xl:h-[calc(100vh-250px)]">
+              {plays.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-800/80 bg-[#0f162a] px-4 py-6 text-center">
+                  <Mail size={28} className="mx-auto mb-3 text-slate-600" />
+                  <p className="text-sm text-slate-300">No messaging plays yet.</p>
+                  <p className="mt-1 text-xs text-slate-500">Create one and the workspace will generate anatomy and email drafts here.</p>
                 </div>
               ) : (
-                <div className="p-6 space-y-6">
-                  {/* Messaging Anatomy Table */}
-                  {loading ? (
-                    <div className="space-y-3">
-                      {[...Array(8)].map((_, i) => (
-                        <div key={i} className="h-12 bg-[#10172B]/50 rounded animate-pulse" />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="border border-slate-800/60 rounded-lg overflow-hidden">
-                      <div className="overflow-x-auto">
-                        <table className="w-full border-collapse">
-                          <thead>
-                            <tr className="border-b border-slate-800/60 bg-[#0D1224]">
-                              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase">
-                                Component
-                              </th>
-                              {[0, 1, 2].map((i) => (
-                                <th
-                                  key={i}
-                                  className="px-4 py-3 text-left text-xs font-semibold text-slate-400 uppercase min-w-[250px]"
-                                >
-                                  Variation {String.fromCharCode(65 + i)}
-                                </th>
-                              ))}
-                              <th className="px-4 py-3 text-center text-xs font-semibold text-slate-400 uppercase w-12">
-                                +
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {COMPONENT_ORDER.map((componentType) => {
-                              const component = componentMap[componentType];
-                              if (!component) return null;
+                plays.map((play) => (
+                  <div
+                    key={play.id}
+                    className={`group rounded-2xl border p-3 transition ${
+                      selectedPlay?.id === play.id
+                        ? 'border-cyan-500/30 bg-[#11182d]'
+                        : 'border-slate-800/60 bg-[#0f162a] hover:border-slate-700/80 hover:bg-[#11182d]'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <button
+                        onClick={() => setSelectedPlay(play)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <p className="truncate text-sm font-semibold text-white">{play.name}</p>
+                        <p className="mt-1 truncate text-xs text-slate-500">{getPersonaName(play.persona_id)}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {play.icp_id && (
+                            <span className="rounded-full bg-blue-500/16 px-2 py-1 text-[11px] font-medium text-blue-300">
+                              {getICPName(play.icp_id)}
+                            </span>
+                          )}
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                              play.status === 'active'
+                                ? 'bg-emerald-500/16 text-emerald-300'
+                                : play.status === 'archived'
+                                  ? 'bg-amber-500/16 text-amber-300'
+                                  : 'bg-slate-500/16 text-slate-300'
+                            }`}
+                          >
+                            {play.status || 'draft'}
+                          </span>
+                        </div>
+                      </button>
 
-                              return (
-                                <tr
-                                  key={componentType}
-                                  className="border-b border-slate-800/60 hover:bg-[#10172B]/30"
-                                >
-                                  <td className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase w-28 shrink-0">
-                                    {componentType.replace(/_/g, ' ')}
-                                  </td>
-                                  {[0, 1, 2].map((variationIndex) => {
-                                    const variation =
-                                      component.variations?.[variationIndex];
-                                    return (
-                                      <td
-                                        key={variationIndex}
-                                        className="px-4 py-3 min-w-[250px]"
-                                      >
-                                        {variation ? (
-                                          <div className="group relative">
-                                            <textarea
-                                              value={variation.content}
-                                              onChange={(e) => {
-                                                // Update local state for UI feedback
-                                                const newContent =
-                                                  e.target.value;
-                                              }}
-                                              onBlur={(e) => {
-                                                if (
-                                                  e.currentTarget.value !==
-                                                  variation.content
-                                                ) {
-                                                  handleUpdateVariation(
-                                                    component.id,
-                                                    variationIndex,
-                                                    e.currentTarget.value
-                                                  );
-                                                }
-                                              }}
-                                              className="w-full px-2 py-1.5 rounded bg-transparent border border-slate-800/60 text-white text-sm focus:outline-none focus:border-cyan-500/60 resize-none"
-                                              style={{ minHeight: '60px' }}
-                                            />
-                                            <button
-                                              onClick={() =>
-                                                handleDeleteVariation(
-                                                  component.id,
-                                                  variationIndex
-                                                )
-                                              }
-                                              className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-red-400 transition-all"
-                                              title="Delete variation"
-                                            >
-                                              <X size={14} />
-                                            </button>
-                                          </div>
-                                        ) : (
-                                          <div className="px-2 py-1.5 text-slate-500 text-sm italic">
-                                            Empty
-                                          </div>
-                                        )}
-                                      </td>
-                                    );
-                                  })}
-                                  <td className="px-4 py-3 text-center">
-                                    <button
-                                      onClick={() =>
-                                        handleAddVariation(component.id)
-                                      }
-                                      className="p-1.5 rounded hover:bg-[#10172B] text-cyan-500 transition-colors"
-                                      title="Add variation"
-                                    >
-                                      <Plus size={16} />
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleDeletePlay(play.id);
+                        }}
+                        className="rounded-lg p-1.5 text-slate-500 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400"
+                        title="Delete play"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </aside>
+
+        <section className="min-w-0 flex-1 overflow-y-auto">
+          {!selectedPlay ? (
+            <div className="flex h-full items-center justify-center p-6">
+              <div className="max-w-md rounded-3xl border border-slate-800/60 bg-[#0D1224] px-8 py-10 text-center">
+                <Mail size={36} className="mx-auto mb-4 text-slate-600" />
+                <h3 className="text-lg font-semibold text-white">Choose a play to edit</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  Messaging stays focused here: select one play from the left or create a fresh one.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 p-4 md:p-5">
+              <div className="rounded-3xl border border-slate-800/60 bg-[#0D1224] p-4 md:p-5">
+                <div className="flex flex-wrap items-start gap-4">
+                  <div className="min-w-0 flex-1">
+                    {editingPlayName ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={editedPlayName}
+                          onChange={(e) => setEditedPlayName(e.target.value)}
+                          className="min-w-[220px] flex-1 rounded-xl border border-slate-800/60 bg-[#11182d] px-3 py-2 text-lg font-semibold text-white outline-none transition focus:border-cyan-500/60"
+                          autoFocus
+                        />
+                        <button
+                          onClick={handleSavePlayName}
+                          disabled={savingPlayName}
+                          className="rounded-xl bg-cyan-500/14 p-2 text-cyan-300 transition hover:bg-cyan-500/20"
+                        >
+                          <Save size={16} />
+                        </button>
+                        <button
+                          onClick={() => setEditingPlayName(false)}
+                          className="rounded-xl border border-slate-800/60 bg-[#11182d] p-2 text-slate-400 transition hover:text-white"
+                        >
+                          <X size={16} />
+                        </button>
                       </div>
-                    </div>
-                  )}
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setEditingPlayName(true);
+                          setEditedPlayName(selectedPlay.name);
+                        }}
+                        className="text-left"
+                      >
+                        <h3 className="text-xl font-semibold text-white transition hover:text-cyan-300">{selectedPlay.name}</h3>
+                      </button>
+                    )}
 
-                  {/* Social Proof Asset Library */}
-                  <div className="border border-slate-800/60 rounded-xl overflow-hidden">
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <span className="rounded-full bg-cyan-500/16 px-3 py-1 text-xs font-medium text-cyan-300">
+                        {getPersonaName(selectedPlay.persona_id)}
+                      </span>
+                      {selectedPlay.icp_id && (
+                        <span className="rounded-full bg-blue-500/16 px-3 py-1 text-xs font-medium text-blue-300">
+                          {getICPName(selectedPlay.icp_id)}
+                        </span>
+                      )}
+                      <span className="rounded-full bg-slate-500/16 px-3 py-1 text-xs font-medium text-slate-300">
+                        {componentCount} component{componentCount === 1 ? '' : 's'}
+                      </span>
+                      <span className="rounded-full bg-slate-500/16 px-3 py-1 text-xs font-medium text-slate-300">
+                        {selectedPlay.email_variants?.length || 0} email draft{selectedPlay.email_variants?.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {componentCount > 0 ? (
+                      <button
+                        onClick={handleRegenerateAll}
+                        disabled={generating}
+                        className="inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-semibold text-amber-300 transition hover:bg-amber-500/16 disabled:opacity-50"
+                      >
+                        <RefreshCw size={16} className={generating ? 'animate-spin' : ''} />
+                        Refresh anatomy
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleGenerateMessaging}
+                        disabled={generating}
+                        className="inline-flex items-center gap-2 rounded-xl bg-cyan-500/14 px-4 py-2.5 text-sm font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
+                      >
+                        <Wand2 size={16} />
+                        Generate anatomy
+                      </button>
+                    )}
+
                     <button
-                      onClick={() => setShowAssetPanel(!showAssetPanel)}
-                      className="w-full flex items-center justify-between px-4 py-3 bg-[#0D1224] hover:bg-slate-800/30 transition-colors text-left"
+                      onClick={handleGenerateEmails}
+                      disabled={generatingEmails || componentCount === 0}
+                      className="inline-flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-2.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/16 disabled:opacity-50"
                     >
-                      <div className="flex items-center gap-2">
-                        <BookOpen size={16} className="text-purple-400" />
-                        <span className="text-sm font-semibold text-white">Social Proof Library</span>
-                        {assets.length > 0 && (
-                          <span className="px-1.5 py-0.5 rounded text-xs bg-purple-500/20 text-purple-400">{assets.length}</span>
-                        )}
-                      </div>
-                      <span className="text-xs text-slate-400">{showAssetPanel ? '▲ Hide' : '▼ Show'} — AI uses these during message generation</span>
+                      <Mail size={16} />
+                      Draft emails
                     </button>
+                  </div>
+                </div>
 
-                    {showAssetPanel && (
-                      <div className="bg-[#0A0F1E] border-t border-slate-800/60 p-4">
-                        {/* Filter tabs */}
-                        <div className="flex gap-2 mb-3">
-                          {(['all', 'case_study', 'testimonial', 'metric'] as const).map((f) => (
-                            <button
-                              key={f}
-                              onClick={() => setAssetFilter(f)}
-                              className={`px-2.5 py-1 rounded text-xs font-medium transition ${
-                                assetFilter === f ? 'bg-purple-500/30 text-purple-300' : 'bg-slate-800/40 text-slate-400 hover:text-slate-300'
-                              }`}
-                            >
-                              {f === 'all' ? 'All' : f.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-                            </button>
-                          ))}
+                <div className="mt-4">
+                  <label className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    AI guidance
+                  </label>
+                  <input
+                    type="text"
+                    value={globalInstruction}
+                    onChange={(e) => setGlobalInstruction(e.target.value)}
+                    placeholder="Optional note for tone, angle, objections, or proof to emphasize"
+                    className="w-full rounded-xl border border-slate-800/60 bg-[#11182d] px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition focus:border-cyan-500/60"
+                  />
+                </div>
+              </div>
+
+              {loading ? (
+                <div className="space-y-3">
+                  {[...Array(4)].map((_, index) => (
+                    <div key={index} className="h-28 rounded-3xl bg-[#11182d]/70 animate-pulse" />
+                  ))}
+                </div>
+              ) : componentCount === 0 ? (
+                <div className="rounded-3xl border border-dashed border-slate-800/80 bg-[#0D1224] px-6 py-10 text-center">
+                  <Wand2 size={36} className="mx-auto mb-4 text-slate-600" />
+                  <h3 className="text-lg font-semibold text-white">No messaging anatomy yet</h3>
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-400">
+                    Generate the core components first. Once those exist, this view stays compact and lets you refine each variation inline.
+                  </p>
+                </div>
+              ) : (
+                <section className="space-y-3">
+                  <div className="flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Message anatomy</h3>
+                      <p className="text-sm text-slate-500">Each component stays editable without forcing a wide table layout.</p>
+                    </div>
+                  </div>
+
+                  {COMPONENT_ORDER.map((componentType) => {
+                    const component = componentMap[componentType];
+                    if (!component) return null;
+
+                    return (
+                      <div key={componentType} className="rounded-3xl border border-slate-800/60 bg-[#0D1224] p-4">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                              {componentType.replace(/_/g, ' ')}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-400">
+                              {component.variations?.length || 0} variation{component.variations?.length === 1 ? '' : 's'}
+                            </p>
+                          </div>
+
+                          <button
+                            onClick={() => handleAddVariation(component.id)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-800/60 bg-[#11182d] px-3 py-2 text-sm font-medium text-slate-300 transition hover:text-white"
+                          >
+                            <Plus size={14} />
+                            Add variation
+                          </button>
                         </div>
 
-                        {assets.length === 0 ? (
-                          <p className="text-xs text-slate-400 text-center py-4">
-                            No assets yet. Add case studies, testimonials & metrics in GTM Intelligence → Assets to give AI better messaging context.
-                          </p>
+                        {component.variations?.length ? (
+                          <div className="grid gap-3 2xl:grid-cols-2">
+                            {component.variations.map((variation, variationIndex) => (
+                              <div key={variation.id} className="group relative rounded-2xl border border-slate-800/60 bg-[#11182d] p-3">
+                                <span className="mb-2 inline-flex rounded-full bg-slate-500/16 px-2 py-1 text-[11px] font-semibold text-slate-300">
+                                  Variation {variationIndex + 1}
+                                </span>
+                                <textarea
+                                  defaultValue={variation.content}
+                                  onBlur={(e) => {
+                                    if (e.currentTarget.value !== variation.content) {
+                                      void handleUpdateVariation(component.id, variationIndex, e.currentTarget.value);
+                                    }
+                                  }}
+                                  className="min-h-[112px] w-full resize-y bg-transparent text-sm leading-6 text-white outline-none"
+                                />
+                                <button
+                                  onClick={() => void handleDeleteVariation(component.id, variationIndex)}
+                                  className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-500 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400"
+                                  title="Delete variation"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         ) : (
-                          <div className="space-y-2 max-h-48 overflow-y-auto">
-                            {assets
-                              .filter((a) => assetFilter === 'all' || a.type === assetFilter)
-                              .map((asset) => (
-                                <div key={asset.id} className="flex items-start gap-3 p-2.5 rounded-lg bg-slate-800/30 border border-slate-800/60">
-                                  <span className={`px-1.5 py-0.5 rounded text-xs font-semibold flex-shrink-0 ${
-                                    asset.type === 'case_study' ? 'bg-blue-500/20 text-blue-400' :
-                                    asset.type === 'testimonial' ? 'bg-green-500/20 text-green-400' :
-                                    'bg-amber-500/20 text-amber-400'
-                                  }`}>
-                                    {asset.type.replace('_', ' ')}
-                                  </span>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-xs font-semibold text-white">{asset.title}</p>
-                                    <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{asset.content}</p>
-                                  </div>
-                                </div>
-                              ))}
+                          <div className="rounded-2xl border border-dashed border-slate-800/80 bg-[#11182d] px-4 py-6 text-sm text-slate-500">
+                            No variations yet. Add one to start shaping this component.
                           </div>
                         )}
                       </div>
-                    )}
+                    );
+                  })}
+                </section>
+              )}
+
+              <div className="rounded-3xl border border-slate-800/60 bg-[#0D1224] overflow-hidden">
+                <button
+                  onClick={() => setShowAssetPanel(!showAssetPanel)}
+                  className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-white/[0.02]"
+                >
+                  <div className="flex items-center gap-2">
+                    <BookOpen size={16} className="text-violet-300" />
+                    <span className="text-sm font-semibold text-white">Social proof</span>
+                    <span className="rounded-full bg-violet-500/12 px-2 py-1 text-[11px] font-medium text-violet-300">
+                      {assets.length}
+                    </span>
                   </div>
+                  <span className="text-xs text-slate-500">{showAssetPanel ? 'Hide references' : 'Show references'}</span>
+                </button>
 
-                  {/* Generate Emails Button */}
-                  {componentCount > 0 && (
-                    <button
-                      onClick={handleGenerateEmails}
-                      disabled={generatingEmails}
-                      className="w-full px-6 py-3 rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 transition-colors font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <Mail size={18} />
-                      Generate Full Emails
-                    </button>
-                  )}
+                {showAssetPanel && (
+                  <div className="border-t border-slate-800/60 p-4">
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {(['all', 'case_study', 'testimonial', 'metric'] as const).map((filterValue) => (
+                        <button
+                          key={filterValue}
+                          onClick={() => setAssetFilter(filterValue)}
+                          className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                            assetFilter === filterValue
+                              ? 'bg-violet-500/18 text-violet-300'
+                              : 'bg-[#11182d] text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {filterValue === 'all'
+                            ? 'All'
+                            : filterValue.replace('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase())}
+                        </button>
+                      ))}
+                    </div>
 
-                  {/* Email Variants */}
-                  {selectedPlay.email_variants &&
-                    selectedPlay.email_variants.length > 0 && (
-                      <div>
-                        <h3 className="text-lg font-semibold text-white mb-4">
-                          Email Variants
-                        </h3>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                          {selectedPlay.email_variants.map((variant) => (
-                            <div
-                              key={variant.id}
-                              className="p-4 rounded-lg border border-slate-800/60 bg-[#0D1224]"
-                            >
-                              <div className="flex items-start justify-between gap-2 mb-3">
-                                <span className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 font-semibold">
-                                  {variant.style_label}
-                                </span>
-                                <button
-                                  onClick={() => handleCopyVariant(variant)}
-                                  className="p-1.5 rounded hover:bg-[#10172B] text-cyan-500 transition-colors"
-                                  title="Copy email"
-                                >
-                                  {copiedVariantId === variant.id ? (
-                                    <Check size={16} />
-                                  ) : (
-                                    <Copy size={16} />
-                                  )}
-                                </button>
-                              </div>
-                              <p className="text-sm font-bold text-white mb-2">
-                                {variant.subject}
-                              </p>
-                              <p className="text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
-                                {variant.body}
-                              </p>
+                    {filteredAssets.length === 0 ? (
+                      <p className="text-sm text-slate-500">
+                        No reference assets in this filter yet. Add them in Mission so the generator can ground copy in real proof.
+                      </p>
+                    ) : (
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        {filteredAssets.map((asset) => (
+                          <div key={asset.id} className="rounded-2xl border border-slate-800/60 bg-[#11182d] p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                                asset.type === 'case_study'
+                                  ? 'bg-blue-500/16 text-blue-300'
+                                  : asset.type === 'testimonial'
+                                    ? 'bg-emerald-500/16 text-emerald-300'
+                                    : 'bg-amber-500/16 text-amber-300'
+                              }`}>
+                                {asset.type.replace('_', ' ')}
+                              </span>
+                              <p className="text-sm font-semibold text-white">{asset.title}</p>
                             </div>
-                          ))}
-                        </div>
+                            <p className="mt-2 text-sm leading-6 text-slate-400">{asset.content}</p>
+                          </div>
+                        ))}
                       </div>
                     )}
-                </div>
+                  </div>
+                )}
+              </div>
+
+              {selectedPlay.email_variants && selectedPlay.email_variants.length > 0 && (
+                <section className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">Ready-to-send drafts</h3>
+                      <p className="text-sm text-slate-500">Copy a finished draft once the anatomy looks right.</p>
+                    </div>
+                    <span className="rounded-full border border-slate-700/80 bg-[#11182d] px-3 py-1 text-xs font-medium text-slate-300">
+                      {selectedPlay.email_variants.length} variants
+                    </span>
+                  </div>
+
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    {selectedPlay.email_variants.map((variant) => (
+                      <div key={variant.id} className="rounded-3xl border border-slate-800/60 bg-[#0D1224] p-4">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <span className="rounded-full bg-blue-500/16 px-2.5 py-1 text-xs font-semibold text-blue-300">
+                            {variant.style_label}
+                          </span>
+                          <button
+                            onClick={() => handleCopyVariant(variant)}
+                            className="rounded-xl p-2 text-cyan-400 transition hover:bg-[#11182d]"
+                            title="Copy email"
+                          >
+                            {copiedVariantId === variant.id ? <Check size={16} /> : <Copy size={16} />}
+                          </button>
+                        </div>
+                        <p className="text-sm font-semibold text-white">{variant.subject}</p>
+                        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-400">{variant.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </section>
       </div>
 
       {/* New Play Modal */}

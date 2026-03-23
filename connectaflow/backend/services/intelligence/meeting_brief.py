@@ -12,7 +12,7 @@ from typing import Optional
 from loguru import logger
 from sqlmodel import Session, select
 
-from models import Lead, CompanyProfile, ICPScore, Signal, MeetingBrief
+from models import Lead, CompanyProfile, ICPScore, Signal, MeetingBrief, Activity, Reply
 
 
 async def generate_meeting_brief(
@@ -87,6 +87,34 @@ async def generate_meeting_brief(
     if lead.custom_data:
         notes = lead.custom_data.get("notes", "") or ""
 
+    interaction_lines: list[str] = []
+    replies = session.exec(
+        select(Reply)
+        .where(Reply.workspace_id == workspace_id)
+        .where(Reply.lead_id == lead.id)
+        .order_by(Reply.received_at.desc())  # type: ignore
+    ).all()
+    for reply in replies[:5]:
+        interaction_lines.append(
+            f"Reply via {reply.channel} on {reply.received_at.date().isoformat()}: {reply.reply_text[:240]}"
+        )
+
+    activities = session.exec(
+        select(Activity)
+        .where(Activity.workspace_id == workspace_id)
+        .where(Activity.lead_id == lead.id)
+        .order_by(Activity.occurred_at.desc())  # type: ignore
+    ).all()
+    for activity in activities[:5]:
+        if activity.notes:
+            interaction_lines.append(
+                f"Activity via {activity.channel} on {activity.occurred_at.date().isoformat()}: {activity.notes[:180]}"
+            )
+
+    if notes:
+        interaction_lines.append(f"Operator notes: {notes}")
+    conversation_history = "\n".join(interaction_lines[:8]).strip()
+
     # ── Build LLM prompt ─────────────────────────────────────────────────────
     context_str = json.dumps({
         "lead": {
@@ -97,7 +125,7 @@ async def generate_meeting_brief(
         "company_profile": profile_data,
         "icp_score": icp_fit_info,
         "signals": signal_info,
-        "conversation_notes": notes,
+        "conversation_history": conversation_history,
     }, default=str)
 
     prompt = (
@@ -119,7 +147,7 @@ async def generate_meeting_brief(
     )
 
     # ── LLM call ─────────────────────────────────────────────────────────────
-    content_json = _fallback_brief(lead, icp_fit_info, signal_info, notes)
+    content_json = _fallback_brief(lead, icp_fit_info, signal_info, conversation_history)
 
     if settings.has_any_llm_provider():
         model, api_key_env = _get_provider()

@@ -1,6 +1,7 @@
 "use client";
 
-import { FlaskRound, MessageSquare } from 'lucide-react';
+import { useState } from 'react';
+import { FlaskRound, MessageSquare, Pencil, Trash2, Copy, X, Check } from 'lucide-react';
 import type {
     BuyingTriggerData,
     GTMContextDetail,
@@ -8,6 +9,7 @@ import type {
     PersonaData,
     SignalDefinitionData,
 } from '../../services/api';
+import api from '../../services/api';
 
 export function Chip({ text, color }: { text: string; color: string }) {
     return <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${color}`}>{text}</span>;
@@ -63,7 +65,26 @@ export function Overview({ detail }: { detail: GTMContextDetail }) {
     );
 }
 
-export function Personas({ personas }: { personas: PersonaData[] }) {
+export function Personas({ personas, missionId, onReload }: {
+    personas: PersonaData[];
+    missionId?: string;
+    onReload?: () => void;
+}) {
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const handleDelete = async (id: string) => {
+        if (!missionId) return;
+        setDeletingId(id);
+        try {
+            await api.delete(`/gtm/personas/${id}`);
+            onReload?.();
+        } catch {
+            // silently fail
+        } finally {
+            setDeletingId(null);
+        }
+    };
+
     if (!personas.length) return <EmptyState text="No personas yet. Generate strategy to create them." />;
     return (
         <div className="grid md:grid-cols-2 gap-4">
@@ -74,7 +95,19 @@ export function Personas({ personas }: { personas: PersonaData[] }) {
                             <p className="text-sm font-semibold text-white">{persona.name}</p>
                             <p className="text-xs text-slate-500">{persona.department} • {persona.seniority}</p>
                         </div>
-                        <Chip text={persona.decision_role || 'Role'} color="bg-cyan-500/15 text-cyan-200" />
+                        <div className="flex items-center gap-1">
+                            <Chip text={persona.decision_role || 'Role'} color="bg-cyan-500/15 text-cyan-200" />
+                            {missionId && (
+                                <button
+                                    onClick={() => void handleDelete(persona.id)}
+                                    disabled={deletingId === persona.id}
+                                    className="ml-1 rounded-lg p-1 text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                                    title="Delete persona"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
                     </div>
                     <Field label="Titles" value={persona.job_titles?.join(', ')} />
                     <Field label="KPIs" value={persona.kpis?.join(', ')} />
@@ -89,14 +122,29 @@ export function Personas({ personas }: { personas: PersonaData[] }) {
                     <Field label="Nightmare Scenario" value={persona.nightmare_scenario} />
                     <Field label="Evaluation Criteria" value={persona.evaluation_criteria?.join(', ')} />
                     <Field label="Messaging Do" value={persona.messaging_do?.join('; ')} />
-                    <Field label="Messaging Don’t" value={persona.messaging_dont?.join('; ')} />
+                    <Field label="Messaging Don't" value={persona.messaging_dont?.join('; ')} />
                 </div>
             ))}
         </div>
     );
 }
 
-export function Triggers({ triggers }: { triggers: BuyingTriggerData[] }) {
+export function Triggers({ triggers, missionId, onReload }: {
+    triggers: BuyingTriggerData[];
+    missionId?: string;
+    onReload?: () => void;
+}) {
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const handleDelete = async (id: string) => {
+        if (!missionId) return;
+        setDeletingId(id);
+        try {
+            await api.delete(`/gtm/triggers/${id}`);
+            onReload?.();
+        } catch {} finally { setDeletingId(null); }
+    };
+
     if (!triggers.length) return <EmptyState text="No triggers yet." />;
     return (
         <div className="grid md:grid-cols-2 gap-4">
@@ -107,7 +155,19 @@ export function Triggers({ triggers }: { triggers: BuyingTriggerData[] }) {
                             <p className="text-sm font-semibold text-white">{trigger.name}</p>
                             <p className="text-xs text-slate-500">{trigger.category || 'uncategorized'}</p>
                         </div>
-                        <Chip text={trigger.urgency_level || 'timing'} color="bg-amber-500/15 text-amber-200" />
+                        <div className="flex items-center gap-1">
+                            <Chip text={trigger.urgency_level || 'timing'} color="bg-amber-500/15 text-amber-200" />
+                            {missionId && (
+                                <button
+                                    onClick={() => void handleDelete(trigger.id)}
+                                    disabled={deletingId === trigger.id}
+                                    className="ml-1 rounded-lg p-1 text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                                    title="Delete trigger"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
                     </div>
                     <Field label="Description" value={trigger.description} />
                     <Field label="Why it matters" value={trigger.why_it_matters} />
@@ -119,14 +179,29 @@ export function Triggers({ triggers }: { triggers: BuyingTriggerData[] }) {
     );
 }
 
-export function Signals({ signals }: { signals: SignalDefinitionData[] }) {
+export function Signals({ signals, missionId, onReload }: {
+    signals: SignalDefinitionData[];
+    missionId?: string;
+    onReload?: () => void;
+}) {
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const handleDelete = async (id: string) => {
+        if (!missionId) return;
+        setDeletingId(id);
+        try {
+            await api.delete(`/gtm/signals/${id}`);
+            onReload?.();
+        } catch {} finally { setDeletingId(null); }
+    };
+
     if (!signals.length) return <EmptyState text="No signal definitions yet." />;
     return (
         <div className="grid md:grid-cols-2 gap-4">
             {signals.map((signal) => (
                 <div key={signal.id} className="min-w-0 p-4 rounded-xl bg-[#0A0F1E] border border-slate-800/60 space-y-4 overflow-hidden">
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                             <p className="text-sm font-semibold text-white">{signal.name}</p>
                             <div className="mt-2 flex flex-wrap gap-2">
                                 {signal.source?.split('|').map((item) => item.trim()).filter(Boolean).map((item) => (
@@ -139,7 +214,19 @@ export function Signals({ signals }: { signals: SignalDefinitionData[] }) {
                                 ))}
                             </div>
                         </div>
-                        <Chip text={`Strength ${Math.round((signal.strength_score || 0) * 100)}%`} color="bg-cyan-500/15 text-cyan-200" />
+                        <div className="flex items-center gap-1 shrink-0">
+                            <Chip text={`Strength ${Math.round((signal.strength_score || 0) * 100)}%`} color="bg-cyan-500/15 text-cyan-200" />
+                            {missionId && (
+                                <button
+                                    onClick={() => void handleDelete(signal.id)}
+                                    disabled={deletingId === signal.id}
+                                    className="ml-1 rounded-lg p-1 text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                                    title="Delete signal"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
                     </div>
                     <Field label="Description" value={signal.description} />
                     <div>
@@ -161,7 +248,22 @@ export function Signals({ signals }: { signals: SignalDefinitionData[] }) {
     );
 }
 
-export function Plays({ plays }: { plays: GTMPlayData[] }) {
+export function Plays({ plays, missionId, onReload }: {
+    plays: GTMPlayData[];
+    missionId?: string;
+    onReload?: () => void;
+}) {
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const handleDelete = async (id: string) => {
+        if (!missionId) return;
+        setDeletingId(id);
+        try {
+            await api.delete(`/gtm/plays/${id}`);
+            onReload?.();
+        } catch {} finally { setDeletingId(null); }
+    };
+
     if (!plays.length) return <EmptyState text="No plays yet." />;
     return (
         <div className="space-y-4">
@@ -172,7 +274,19 @@ export function Plays({ plays }: { plays: GTMPlayData[] }) {
                             <p className="text-sm font-semibold text-white">{play.name}</p>
                             <p className="text-xs text-slate-500">{play.icp_statement}</p>
                         </div>
-                        <Chip text={play.status || 'draft'} color="bg-emerald-500/15 text-emerald-200" />
+                        <div className="flex items-center gap-1">
+                            <Chip text={play.status || 'draft'} color="bg-emerald-500/15 text-emerald-200" />
+                            {missionId && (
+                                <button
+                                    onClick={() => void handleDelete(play.id)}
+                                    disabled={deletingId === play.id}
+                                    className="ml-1 rounded-lg p-1 text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                                    title="Delete play"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
                     </div>
                     <Field label="Trigger / Signal / Persona" value={[play.trigger_id, play.signal_id, play.persona_id].filter(Boolean).join(' • ') || '—'} />
                     <Field label="Messaging angle" value={play.messaging_angle} />

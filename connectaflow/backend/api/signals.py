@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from api.deps import get_workspace_id
 from database import get_session
 from models import Signal, CompanyProfile, ICPScore, ExternalSignal
+from services.records import ensure_account_for_domain
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
@@ -252,6 +253,98 @@ def update_external_signal(
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
     signal.status = status.lower()
+
+    if signal.status == "added":
+        profile = session.exec(
+            select(CompanyProfile)
+            .where(CompanyProfile.workspace_id == workspace_id)
+            .where(CompanyProfile.domain == signal.domain)
+        ).first()
+
+        if not profile:
+            quality_score = max(0.45, min(signal.confidence or 0.65, 0.95))
+            quality_tier = "high" if quality_score >= 0.75 else "medium" if quality_score >= 0.55 else "low"
+            profile = CompanyProfile(
+                workspace_id=workspace_id,
+                domain=signal.domain,
+                name=signal.company_name or signal.domain,
+                enriched_data={
+                    "company_name": {
+                        "value": signal.company_name or signal.domain,
+                        "confidence": max(signal.confidence or 0.7, 0.55),
+                        "source": "external_discovery",
+                        "source_url": signal.source_url,
+                        "evidence": signal.evidence or "Imported from external discovery feed.",
+                    },
+                    "company_description": {
+                        "value": signal.evidence or f"Imported from external discovery via {signal.signal_type}.",
+                        "confidence": max((signal.confidence or 0.65) * 0.8, 0.4),
+                        "source": "external_discovery",
+                        "source_url": signal.source_url,
+                        "evidence": signal.evidence or "",
+                    },
+                },
+                quality_score=quality_score,
+                quality_tier=quality_tier,
+                sources_used=["external_discovery"],
+                enriched_at=datetime.utcnow(),
+                fetch_metadata={
+                    "source": "external_discovery",
+                    "signal_type": signal.signal_type,
+                    "imported_from_external_signal_id": str(signal.id),
+                },
+            )
+        else:
+            profile.name = profile.name or signal.company_name or signal.domain
+            current_sources = list(profile.sources_used or [])
+            if "external_discovery" not in current_sources:
+                current_sources.append("external_discovery")
+            profile.sources_used = current_sources
+            profile.fetch_metadata = {
+                **(profile.fetch_metadata or {}),
+                "last_external_signal_import": str(signal.id),
+                "last_external_signal_type": signal.signal_type,
+            }
+            if signal.company_name and "company_name" not in (profile.enriched_data or {}):
+                profile.enriched_data = {
+                    **(profile.enriched_data or {}),
+                    "company_name": {
+                        "value": signal.company_name,
+                        "confidence": max(signal.confidence or 0.7, 0.55),
+                        "source": "external_discovery",
+                        "source_url": signal.source_url,
+                        "evidence": signal.evidence or "",
+                    },
+                }
+        session.add(profile)
+
+        internal_signal = session.exec(
+            select(Signal)
+            .where(Signal.workspace_id == workspace_id)
+            .where(Signal.domain == signal.domain)
+            .where(Signal.signal_type == signal.signal_type)
+            .where(Signal.evidence == signal.evidence)
+        ).first()
+        if not internal_signal:
+            internal_signal = Signal(
+                workspace_id=workspace_id,
+                domain=signal.domain,
+                signal_type=signal.signal_type,
+                strength=max(signal.strength, signal.relevance, 0.35),
+                source_url=signal.source_url,
+                evidence=signal.evidence,
+                detected_at=signal.discovered_at,
+            )
+            session.add(internal_signal)
+
+        ensure_account_for_domain(
+            session,
+            workspace_id,
+            signal.domain,
+            name=signal.company_name,
+            touch_signal=True,
+        )
+
     session.add(signal)
     session.commit()
     session.refresh(signal)

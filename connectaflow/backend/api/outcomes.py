@@ -15,8 +15,9 @@ from database import get_session
 from api.deps import get_workspace_id
 from models import (
     Lead, Reply, SmartleadStats, ManualActivityLog,
-    ICPScore, MessagingPlay, Persona, Workspace,
+    ICPScore, MessagingPlay, Persona, Workspace, Activity,
 )
+from services.records import ensure_account_for_domain, record_outcome, sync_lead_account
 
 router = APIRouter(prefix="/outcomes", tags=["outcomes"])
 
@@ -177,29 +178,7 @@ def by_play(
     session: Session = Depends(get_session),
     workspace_id: uuid.UUID = Depends(get_workspace_id),
 ):
-    plays = session.exec(
-        select(MessagingPlay).where(MessagingPlay.workspace_id == workspace_id)
-    ).all()
-    replies = session.exec(
-        select(Reply).where(Reply.workspace_id == workspace_id)
-    ).all()
-
-    play_reply_count = {}
-    for r in replies:
-        if r.play_id:
-            pid = str(r.play_id)
-            play_reply_count[pid] = play_reply_count.get(pid, 0) + 1
-
-    result = []
-    for play in plays:
-        pid = str(play.id)
-        result.append({
-            "play_id": pid,
-            "play_name": play.name,
-            "replies": play_reply_count.get(pid, 0),
-        })
-
-    return {"by_play": result}
+    return {"by_play": _build_play_metrics(session, workspace_id)}
 
 
 # ── By Persona ────────────────────────────────────────────────────────────────
@@ -212,35 +191,40 @@ def by_persona(
     plays = session.exec(
         select(MessagingPlay).where(MessagingPlay.workspace_id == workspace_id)
     ).all()
-    replies = session.exec(
-        select(Reply).where(Reply.workspace_id == workspace_id)
-    ).all()
-
-    play_to_persona = {str(p.id): str(p.persona_id) for p in plays}
-
-    persona_reply_count = {}
-    for r in replies:
-        if r.play_id:
-            pid = str(r.play_id)
-            persona_id = play_to_persona.get(pid)
-            if persona_id:
-                persona_reply_count[persona_id] = persona_reply_count.get(persona_id, 0) + 1
-
+    play_metrics = _build_play_metrics(session, workspace_id)
+    play_to_persona = {str(play.id): str(play.persona_id) for play in plays}
     personas = session.exec(
         select(Persona).where(Persona.workspace_id == workspace_id)
     ).all()
 
-    result = []
-    for p in personas:
-        pid = str(p.id)
-        result.append({
-            "persona_id": pid,
-            "persona_name": p.name,
-            "department": p.department,
-            "replies": persona_reply_count.get(pid, 0),
-        })
+    persona_rollup: dict[str, dict] = {
+        str(persona.id): {
+            "persona_id": str(persona.id),
+            "persona_name": persona.name,
+            "department": persona.department,
+            "contacted": 0,
+            "replies": 0,
+            "meetings_booked": 0,
+            "reply_rate": 0.0,
+            "conversion_rate": 0.0,
+        }
+        for persona in personas
+    }
 
-    return {"by_persona": result}
+    for metric in play_metrics:
+        persona_id = play_to_persona.get(metric["play_id"])
+        if not persona_id or persona_id not in persona_rollup:
+            continue
+        row = persona_rollup[persona_id]
+        row["contacted"] += metric["contacted"]
+        row["replies"] += metric["replies"]
+        row["meetings_booked"] += metric["meetings_booked"]
+
+    for row in persona_rollup.values():
+        row["reply_rate"] = _rate(row["replies"], row["contacted"])
+        row["conversion_rate"] = _rate(row["meetings_booked"], row["contacted"])
+
+    return {"by_persona": list(persona_rollup.values())}
 
 
 # ── Smartlead Sync ────────────────────────────────────────────────────────────
@@ -319,15 +303,15 @@ async def sync_smartlead(
 
             # Find lead by email
             lead_email = r_data.get("email", "")
-            lead_id = None
+            lead_obj = None
             if lead_email:
-                lead = session.exec(
+                lead_obj = session.exec(
                     select(Lead)
                     .where(Lead.email == lead_email)
                     .where(Lead.workspace_id == workspace_id)
                 ).first()
-                if lead:
-                    lead_id = lead.id
+                if lead_obj:
+                    sync_lead_account(session, workspace_id, lead_obj)
 
             # Check duplicate (same text from same source)
             from models import Reply as ReplyModel
@@ -341,15 +325,29 @@ async def sync_smartlead(
                 continue
 
             from models import Reply as ReplyModel
+            account = ensure_account_for_domain(
+                session,
+                workspace_id,
+                lead_obj.domain if lead_obj else None,
+                name=(lead_obj.custom_data or {}).get("company_name") if lead_obj and isinstance(lead_obj.custom_data, dict) else None,
+                touch_signal=True,
+            )
             reply = ReplyModel(
                 workspace_id=workspace_id,
-                lead_id=lead_id,
+                lead_id=lead_obj.id if lead_obj else None,
+                account_id=account.id if account else None,
+                account_domain=account.domain if account else (lead_obj.domain if lead_obj else None),
                 channel="email",
                 reply_text=reply_text,
                 source="smartlead",
             )
             session.add(reply)
             session.flush()
+
+            if lead_obj:
+                lead_obj.status = "Meeting Booked" if lead_obj.status == "Meeting Booked" else "Replied"
+                lead_obj.contacts_without_reply = 0
+                session.add(lead_obj)
 
             # Classify
             try:
@@ -359,6 +357,17 @@ async def sync_smartlead(
                 session.add(reply)
             except Exception:
                 pass
+
+            record_outcome(
+                session,
+                workspace_id,
+                lead_id=lead_obj.id if lead_obj else None,
+                account_id=account.id if account else None,
+                channel="email",
+                outcome_type="reply_received",
+                notes="Reply synced from Smartlead.",
+                metadata={"source": "smartlead", "campaign_id": campaign_id},
+            )
 
             synced_replies += 1
 
@@ -486,6 +495,22 @@ def download_calls_template():
     return _csv_response("calls_template.csv", headers, [sample])
 
 
+@router.post("/upload/email", response_model=dict)
+async def upload_email_csv(
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    workspace_id: uuid.UUID = Depends(get_workspace_id),
+):
+    return await _process_manual_csv(file, "email", session, workspace_id)
+
+
+@router.get("/templates/email")
+def download_email_template():
+    headers = ["lead_email", "lead_name", "company", "date", "status", "notes"]
+    sample = ["john@acme.com", "John Smith", "Acme Corp", "2026-03-15", "replied", "Interested in pricing"]
+    return _csv_response("email_template.csv", headers, [sample])
+
+
 def _csv_response(filename: str, headers: list[str], rows: list[list]) -> StreamingResponse:
     output = io.StringIO()
     writer = csv_module.writer(output)
@@ -516,3 +541,80 @@ def _aggregate_manual_logs(logs: list[ManualActivityLog]) -> dict:
 
 def _empty_tier() -> dict:
     return {"total": 0, "contacted": 0, "replies": 0, "meetings_booked": 0, "reply_rate": 0.0, "conversion_rate": 0.0}
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 3) if denominator > 0 else 0.0
+
+
+def _target_key(lead_id, account_domain: Optional[str]) -> Optional[str]:
+    if lead_id:
+        return f"lead:{lead_id}"
+    if account_domain:
+        return f"account:{account_domain.lower()}"
+    return None
+
+
+def _build_play_metrics(session: Session, workspace_id: uuid.UUID) -> list[dict]:
+    plays = session.exec(
+        select(MessagingPlay).where(MessagingPlay.workspace_id == workspace_id)
+    ).all()
+    activities = session.exec(
+        select(Activity).where(Activity.workspace_id == workspace_id)
+    ).all()
+    replies = session.exec(
+        select(Reply).where(Reply.workspace_id == workspace_id)
+    ).all()
+    leads = session.exec(
+        select(Lead).where(Lead.workspace_id == workspace_id)
+    ).all()
+    lead_map = {str(lead.id): lead for lead in leads}
+
+    metrics: dict[str, dict] = {
+        str(play.id): {
+            "play_id": str(play.id),
+            "play_name": play.name,
+            "_contacted": set(),
+            "_replied": set(),
+            "_meetings": set(),
+        }
+        for play in plays
+    }
+
+    for activity in activities:
+        if not activity.play_id:
+            continue
+        key = _target_key(activity.lead_id, activity.account_domain)
+        row = metrics.get(str(activity.play_id))
+        if not key or not row:
+            continue
+        row["_contacted"].add(key)
+        lead = lead_map.get(str(activity.lead_id)) if activity.lead_id else None
+        if lead and lead.status == "Meeting Booked":
+            row["_meetings"].add(key)
+
+    for reply in replies:
+        if not reply.play_id:
+            continue
+        key = _target_key(reply.lead_id, reply.account_domain)
+        row = metrics.get(str(reply.play_id))
+        if not key or not row:
+            continue
+        row["_replied"].add(key)
+        lead = lead_map.get(str(reply.lead_id)) if reply.lead_id else None
+        if lead and lead.status == "Meeting Booked":
+            row["_meetings"].add(key)
+
+    result = []
+    for row in metrics.values():
+        contacted = len(row.pop("_contacted"))
+        replies_count = len(row.pop("_replied"))
+        meetings = len(row.pop("_meetings"))
+        row["contacted"] = contacted
+        row["replies"] = replies_count
+        row["meetings_booked"] = meetings
+        row["reply_rate"] = _rate(replies_count, contacted)
+        row["conversion_rate"] = _rate(meetings, contacted)
+        result.append(row)
+
+    return result

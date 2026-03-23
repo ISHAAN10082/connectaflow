@@ -30,6 +30,55 @@ class WorkspaceMember(SQLModel, table=True):
 
 
 # ─────────────────────────────────────────────────────────────
+# Accounts / Tasks / Outcomes
+# ─────────────────────────────────────────────────────────────
+
+class Account(SQLModel, table=True):
+    __tablename__ = "accounts"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    domain: str = Field(index=True)
+    name: Optional[str] = None
+    latest_tier: Optional[str] = None
+    latest_icp_score: Optional[float] = None
+    status: str = "target"  # target | active | cooling_down | customer
+    notes: str = ""
+    last_signal_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TaskItem(SQLModel, table=True):
+    __tablename__ = "tasks"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    play_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    title: str
+    description: str = ""
+    task_type: str = "follow_up"   # follow_up | reminder | manual
+    status: str = "open"           # open | completed | cancelled
+    due_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OutcomeEvent(SQLModel, table=True):
+    __tablename__ = "outcomes"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
+    lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    play_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    channel: Optional[str] = None
+    outcome_type: str = Field(index=True)   # reply_received | meeting_booked | uninterested | bad_timing
+    notes: Optional[str] = None
+    meta_data: Dict = Field(default={}, sa_column=Column(JSON))
+    occurred_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────────
 # Quality Architecture: DataPoint — every value carries provenance
 # ─────────────────────────────────────────────────────────────
 
@@ -878,6 +927,7 @@ class Activity(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_id: Optional[uuid.UUID] = Field(default=None, index=True)
     account_domain: Optional[str] = Field(default=None, index=True)
     play_id: Optional[uuid.UUID] = Field(default=None, index=True)
     channel: str   # email | linkedin | call
@@ -888,6 +938,7 @@ class Activity(SQLModel, table=True):
 
 class ActivityCreate(BaseModel):
     lead_id: Optional[str] = None
+    account_id: Optional[str] = None
     account_domain: Optional[str] = None
     play_id: Optional[str] = None
     channel: str
@@ -905,8 +956,11 @@ class Reply(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     workspace_id: uuid.UUID = Field(default=DEFAULT_WORKSPACE_ID, foreign_key="workspaces.id", index=True)
     lead_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    account_domain: Optional[str] = Field(default=None, index=True)
     activity_id: Optional[uuid.UUID] = Field(default=None, index=True)
     play_id: Optional[uuid.UUID] = Field(default=None)
+    email_variant_id: Optional[uuid.UUID] = Field(default=None, index=True)
     channel: str   # email | linkedin | call
     reply_text: str
     classification: Optional[str] = None   # interested | objection | neutral | ooo
@@ -917,8 +971,11 @@ class Reply(SQLModel, table=True):
 
 class ReplyCreate(BaseModel):
     lead_id: Optional[str] = None
+    lead_email: Optional[str] = None
+    account_domain: Optional[str] = None
     activity_id: Optional[str] = None
     play_id: Optional[str] = None
+    email_variant_id: Optional[str] = None
     channel: str
     reply_text: str
     source: str = "manual_entry"

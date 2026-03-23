@@ -4,7 +4,7 @@ Every outreach action (email send, LinkedIn touch, call) is recorded here
 so the Replies and Outcomes modules can trace full engagement history.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -12,7 +12,8 @@ from sqlmodel import Session, select
 
 from api.deps import get_workspace_id
 from database import get_session
-from models import Activity
+from models import Activity, Lead, Workspace
+from services.records import ensure_account_for_domain, sync_lead_account
 
 router = APIRouter(prefix="/activities", tags=["activities"])
 
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/activities", tags=["activities"])
 
 class ActivityCreate(BaseModel):
     lead_id: Optional[str] = None
+    account_id: Optional[str] = None
     account_domain: Optional[str] = None
     play_id: Optional[str] = None
     email_variant_id: Optional[str] = None
@@ -44,10 +46,25 @@ async def log_activity(
     if payload.channel not in ("email", "linkedin", "call"):
         raise HTTPException(400, "channel must be one of: email, linkedin, call")
 
+    lead = session.get(Lead, uuid.UUID(payload.lead_id)) if payload.lead_id else None
+    if lead and lead.workspace_id != workspace_id:
+        raise HTTPException(404, "Lead not found")
+
+    account_domain = payload.account_domain or (lead.domain if lead else None)
+    account = ensure_account_for_domain(
+        session,
+        workspace_id,
+        account_domain,
+        name=(lead.custom_data or {}).get("company_name") if lead and isinstance(lead.custom_data, dict) else None,
+    )
+    if lead and lead.company_id is None:
+        sync_lead_account(session, workspace_id, lead)
+
     activity = Activity(
         workspace_id=workspace_id,
-        lead_id=uuid.UUID(payload.lead_id) if payload.lead_id else None,
-        account_domain=payload.account_domain,
+        lead_id=lead.id if lead else None,
+        account_id=uuid.UUID(payload.account_id) if payload.account_id else (account.id if account else None),
+        account_domain=account.domain if account else account_domain,
         play_id=uuid.UUID(payload.play_id) if payload.play_id else None,
         email_variant_id=uuid.UUID(payload.email_variant_id) if payload.email_variant_id else None,
         channel=payload.channel,
@@ -57,18 +74,33 @@ async def log_activity(
     session.add(activity)
 
     # Increment contacts_without_reply on the linked lead (for cooldown tracking)
-    if payload.lead_id:
-        from models import Lead
-        lead = session.get(Lead, uuid.UUID(payload.lead_id))
-        if lead and lead.workspace_id == workspace_id:
-            lead.contacts_without_reply = (lead.contacts_without_reply or 0) + 1
-            # Auto-trigger cooldown after 3 unanswered contacts (configurable)
-            if lead.contacts_without_reply >= 3 and lead.status not in ("Cool Down", "Replied", "Meeting Booked"):
-                from datetime import timedelta
-                lead.status = "Cool Down"
-                lead.cooldown_until = datetime.utcnow() + timedelta(days=180)
-            lead.updated_at = datetime.utcnow()
-            session.add(lead)
+    if lead:
+        lead.contacts_without_reply = (lead.contacts_without_reply or 0) + 1
+        lead.updated_at = datetime.utcnow()
+        session.add(lead)
+
+        workspace = session.get(Workspace, workspace_id)
+        settings = (workspace.settings or {}) if workspace else {}
+        threshold = int(settings.get("cooldown_contact_threshold") or 3)
+        cooldown_months = int(settings.get("cooldown_months") or 6)
+
+        if lead.contacts_without_reply >= threshold and lead.status not in ("Cool Down", "Replied", "Meeting Booked"):
+            impacted_leads = [lead]
+            if lead.domain:
+                impacted_leads = session.exec(
+                    select(Lead)
+                    .where(Lead.workspace_id == workspace_id)
+                    .where(Lead.domain == lead.domain)
+                ).all()
+
+            cooldown_until = datetime.utcnow() + timedelta(days=max(cooldown_months, 1) * 30)
+            for impacted in impacted_leads:
+                if impacted.status in ("Replied", "Meeting Booked"):
+                    continue
+                impacted.status = "Cool Down"
+                impacted.cooldown_until = cooldown_until
+                impacted.updated_at = datetime.utcnow()
+                session.add(impacted)
 
     session.commit()
     session.refresh(activity)
@@ -142,6 +174,7 @@ def _activity_dict(a: Activity) -> dict:
         "id": str(a.id),
         "workspace_id": str(a.workspace_id),
         "lead_id": str(a.lead_id) if a.lead_id else None,
+        "account_id": str(a.account_id) if a.account_id else None,
         "account_domain": a.account_domain,
         "play_id": str(a.play_id) if a.play_id else None,
         "email_variant_id": str(a.email_variant_id) if a.email_variant_id else None,

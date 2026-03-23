@@ -32,6 +32,7 @@ _active_jobs: dict[str, dict] = {}
 class BatchEnrichRequest(BaseModel):
     domains: list[str]
     icp_id: Optional[str] = None
+    requested_fields: list[str] = []
 
 
 class DomainListRequest(BaseModel):
